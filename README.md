@@ -41,7 +41,7 @@ WIDTH=320 HEIGHT=180 BORDER_COLOR=0xFF00FF00 HIDE_WHEN_NO_FOCUS=true eve-l-previ
 
 ### Binary
 
-Prebuilt static binaries (linked against musl64) are available on the [Releases](https://github.com/ilveth/eve-l-preview) page.
+Prebuilt static binaries (linked against musl64) are available on the releases page.
 No external runtime dependencies are required.
 
 ### Nix
