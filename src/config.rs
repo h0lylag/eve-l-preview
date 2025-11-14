@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -30,6 +31,11 @@ pub struct Config {
     #[serde(rename = "text_background")]
     text_background_hex: String,
     pub hide_when_no_focus: bool,
+    
+    /// Character name → (x, y) position
+    /// Persisted positions for each character's thumbnail
+    #[serde(default)]
+    pub character_positions: HashMap<String, (i16, i16)>,
 }
 
 fn serialize_color<S>(hex: &String, serializer: S) -> Result<S::Ok, S::Error>
@@ -108,7 +114,7 @@ impl Config {
         config
     }
 
-    fn save(&self) -> Result<()> {
+    pub fn save(&self) -> Result<()> {
         let path = Self::config_path();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -204,6 +210,7 @@ impl Config {
             hide_when_no_focus: env::var("HIDE_WHEN_NO_FOCUS")
                 .map(|x| x.parse().unwrap_or(false))
                 .unwrap_or(false),
+            character_positions: HashMap::new(),
         }
     }
 

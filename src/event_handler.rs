@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use x11rb::connection::Connection;
 use x11rb::protocol::damage::ConnectionExt as DamageExt;
@@ -8,17 +9,19 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as WrapperExt;
 
 use crate::config::Config;
+use crate::persistence::SavedState;
 use crate::thumbnail::Thumbnail;
 use crate::x11_utils::{is_window_eve, CachedAtoms};
 
 pub fn handle_event<'a>(
     conn: &'a RustConnection,
     screen: &Screen,
-    config: &'a Config,
+    config: &'a RefCell<Config>,
     eves: &mut HashMap<Window, Thumbnail<'a>>,
     event: Event,
     atoms: &CachedAtoms,
-    check_and_create_window: impl Fn(&'a RustConnection, &Screen, &'a Config, Window, &CachedAtoms) -> Result<Option<Thumbnail<'a>>>,
+    state: &mut SavedState,
+    check_and_create_window: impl Fn(&'a RustConnection, &Screen, &'a RefCell<Config>, Window, &CachedAtoms, &SavedState) -> Result<Option<Thumbnail<'a>>>,
 ) -> Result<()> {
     match event {
         DamageNotify(event) => {
@@ -32,7 +35,7 @@ pub fn handle_event<'a>(
             }
         }
         CreateNotify(event) => {
-            if let Some(thumbnail) = check_and_create_window(conn, screen, config, event.window, atoms)? {
+            if let Some(thumbnail) = check_and_create_window(conn, screen, config, event.window, atoms, state)? {
                 eves.insert(event.window, thumbnail);
             }
         }
@@ -42,12 +45,26 @@ pub fn handle_event<'a>(
         PropertyNotify(event) => {
             if event.atom == atoms.wm_name
                 && let Some(thumbnail) = eves.get_mut(&event.window)
-                && let Some(character_name) = is_window_eve(conn, event.window, atoms)?
+                && let Some(new_character_name) = is_window_eve(conn, event.window, atoms)?
             {
-                thumbnail.character_name = character_name;
-                thumbnail.update_name()?;
+                // Character name changed (login/logout/character switch)
+                let old_name = thumbnail.character_name.clone();
+                let current_pos = (thumbnail.x, thumbnail.y);
+                
+                // Ask state manager what to do
+                let new_position = state.handle_character_change(
+                    event.window,
+                    &old_name,
+                    &new_character_name,
+                    current_pos,
+                    &mut config.borrow_mut(),
+                )?;
+                
+                // Update thumbnail (may move to new position)
+                thumbnail.set_character_name(new_character_name, new_position)?;
+                
             } else if event.atom == atoms.wm_name
-                && let Some(thumbnail) = check_and_create_window(conn, screen, config, event.window, atoms)?
+                && let Some(thumbnail) = check_and_create_window(conn, screen, config, event.window, atoms, state)?
             {
                 eves.insert(event.window, thumbnail);
             } else if event.atom == atoms.net_wm_state
@@ -66,7 +83,7 @@ pub fn handle_event<'a>(
                 thumbnail.minimized = false;
                 thumbnail.focused = true;
                 thumbnail.border(true)?;
-                if config.hide_when_no_focus && eves.values().any(|x| !x.visible) {
+                if config.borrow().hide_when_no_focus && eves.values().any(|x| !x.visible) {
                     for thumbnail in eves.values_mut() {
                         thumbnail.visibility(true)?;
                     }
@@ -77,7 +94,7 @@ pub fn handle_event<'a>(
             if let Some(thumbnail) = eves.get_mut(&event.event) {
                 thumbnail.focused = false;
                 thumbnail.border(false)?;
-                if config.hide_when_no_focus && eves.values().all(|x| !x.focused && !x.minimized) {
+                if config.borrow().hide_when_no_focus && eves.values().all(|x| !x.focused && !x.minimized) {
                     for thumbnail in eves.values_mut() {
                         thumbnail.visibility(false)?;
                     }
@@ -109,6 +126,18 @@ pub fn handle_event<'a>(
                 {
                     thumbnail.focus()?;
                 }
+                
+                // Save position after drag ends (right-click release)
+                if thumbnail.input_state.dragging {
+                    state.update_position(
+                        &thumbnail.character_name,
+                        thumbnail.window,
+                        thumbnail.x,
+                        thumbnail.y,
+                        &mut config.borrow_mut(),
+                    )?;
+                }
+                
                 thumbnail.input_state.dragging = false;
             }
         }
