@@ -10,6 +10,7 @@ use x11rb::wrapper::ConnectionExt as WrapperExt;
 
 use crate::config::Config;
 use crate::persistence::SavedState;
+use crate::snapping;
 use crate::thumbnail::Thumbnail;
 use crate::x11_utils::{is_window_eve, CachedAtoms};
 
@@ -142,15 +143,55 @@ pub fn handle_event<'a>(
             }
         }
         Event::MotionNotify(event) => {
-            if let Some((_, thumbnail)) = eves.iter_mut().find(|(_, thumb)| {
-                thumb.input_state.dragging && thumb.is_hovered(event.root_x, event.root_y)
-            }) {
-                // TODO: snap to be inline with other thumbnails
-                let dx = event.root_x - thumbnail.input_state.drag_start.0;
-                let dy = event.root_y - thumbnail.input_state.drag_start.1;
-                let new_x = thumbnail.input_state.win_start.0 + dx;
-                let new_y = thumbnail.input_state.win_start.1 + dy;
-                thumbnail.reposition(new_x, new_y)?;
+            // First, find which window is being dragged and calculate new position
+            let drag_info = eves.iter().find_map(|(win, thumb)| {
+                if thumb.input_state.dragging && thumb.is_hovered(event.root_x, event.root_y) {
+                    let dx = event.root_x - thumb.input_state.drag_start.0;
+                    let dy = event.root_y - thumb.input_state.drag_start.1;
+                    let new_x = thumb.input_state.win_start.0 + dx;
+                    let new_y = thumb.input_state.win_start.1 + dy;
+                    Some((*win, new_x, new_y))
+                } else {
+                    None
+                }
+            });
+            
+            if let Some((dragged_window, new_x, new_y)) = drag_info {
+                // Build rect for dragged thumbnail
+                let cfg = config.borrow();
+                let dragged_rect = snapping::Rect {
+                    x: new_x,
+                    y: new_y,
+                    width: cfg.width,
+                    height: cfg.height,
+                };
+                
+                // Build list of other thumbnails for snapping
+                let others: Vec<_> = eves
+                    .iter()
+                    .filter(|(win, t)| **win != dragged_window && t.visible)
+                    .map(|(win, t)| (*win, snapping::Rect {
+                        x: t.x,
+                        y: t.y,
+                        width: cfg.width,
+                        height: cfg.height,
+                    }))
+                    .collect();
+                
+                let snap_threshold = cfg.snap_threshold;
+                drop(cfg); // Release borrow before repositioning
+                
+                // Find snap position
+                let (final_x, final_y) = snapping::find_snap_position(
+                    dragged_rect,
+                    &others,
+                    snap_threshold,
+                ).unwrap_or((new_x, new_y));
+                
+                // Now reposition the dragged thumbnail
+                if let Some(thumbnail) = eves.get_mut(&dragged_window) {
+                    thumbnail.reposition(final_x, final_y)?;
+                }
             }
         }
         _ => (),

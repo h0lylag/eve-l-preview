@@ -36,6 +36,14 @@ pub struct Config {
     /// Persisted positions for each character's thumbnail
     #[serde(default)]
     pub character_positions: HashMap<String, (i16, i16)>,
+    
+    /// Snap threshold in pixels (0 = disabled)
+    #[serde(default = "default_snap_threshold")]
+    pub snap_threshold: u16,
+}
+
+fn default_snap_threshold() -> u16 {
+    15
 }
 
 fn serialize_color<S>(hex: &String, serializer: S) -> Result<S::Ok, S::Error>
@@ -211,6 +219,7 @@ impl Config {
                 .map(|x| x.parse().unwrap_or(false))
                 .unwrap_or(false),
             character_positions: HashMap::new(),
+            snap_threshold: 15,
         }
     }
 

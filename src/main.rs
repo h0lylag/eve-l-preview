@@ -3,6 +3,7 @@
 mod config;
 mod event_handler;
 mod persistence;
+mod snapping;
 mod thumbnail;
 mod x11_utils;
 
