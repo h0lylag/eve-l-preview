@@ -51,24 +51,36 @@ pub fn find_snap_position(
     
     for (_, other) in others {
         // Horizontal snapping (X-axis)
-        // Snap left edge to right edge of other
+        // Edge-to-edge snapping (always allowed)
         check_snap(&mut best_x, dragged.left(), other.right(), threshold);
-        // Snap right edge to left edge of other
         check_snap(&mut best_x, dragged.right(), other.left(), threshold);
-        // Align left edges
-        check_snap(&mut best_x, dragged.left(), other.left(), threshold);
-        // Align right edges
-        check_snap(&mut best_x, dragged.right(), other.right(), threshold);
+        
+        // Alignment snapping (only if windows overlap or are close on Y-axis)
+        // Check if there's vertical overlap or proximity
+        let vertical_overlap = dragged.bottom() >= other.top() && dragged.top() <= other.bottom();
+        let vertical_proximity = (dragged.top() - other.bottom()).abs() <= threshold
+                              || (dragged.bottom() - other.top()).abs() <= threshold;
+        
+        if vertical_overlap || vertical_proximity {
+            check_snap(&mut best_x, dragged.left(), other.left(), threshold);
+            check_snap(&mut best_x, dragged.right(), other.right(), threshold);
+        }
         
         // Vertical snapping (Y-axis)
-        // Snap top edge to bottom edge of other
+        // Edge-to-edge snapping (always allowed)
         check_snap(&mut best_y, dragged.top(), other.bottom(), threshold);
-        // Snap bottom edge to top edge of other
         check_snap(&mut best_y, dragged.bottom(), other.top(), threshold);
-        // Align top edges
-        check_snap(&mut best_y, dragged.top(), other.top(), threshold);
-        // Align bottom edges
-        check_snap(&mut best_y, dragged.bottom(), other.bottom(), threshold);
+        
+        // Alignment snapping (only if windows overlap or are close on X-axis)
+        // Check if there's horizontal overlap or proximity
+        let horizontal_overlap = dragged.right() >= other.left() && dragged.left() <= other.right();
+        let horizontal_proximity = (dragged.left() - other.right()).abs() <= threshold
+                                 || (dragged.right() - other.left()).abs() <= threshold;
+        
+        if horizontal_overlap || horizontal_proximity {
+            check_snap(&mut best_y, dragged.top(), other.top(), threshold);
+            check_snap(&mut best_y, dragged.bottom(), other.bottom(), threshold);
+        }
     }
     
     // Apply snaps if found
@@ -136,7 +148,8 @@ mod tests {
     #[test]
     fn test_align_left_edges() {
         let dragged = Rect { x: 105, y: 100, width: 50, height: 50 };
-        let other = Rect { x: 100, y: 200, width: 50, height: 50 };
+        // Other window in same row (Y exactly aligned) for horizontal alignment only
+        let other = Rect { x: 100, y: 100, width: 50, height: 50 };
         let result = find_snap_position(dragged, &[(0, other)], 15);
         assert_eq!(result, Some(Position::new(100, 100))); // X aligned to 100
     }
@@ -144,7 +157,8 @@ mod tests {
     #[test]
     fn test_align_right_edges() {
         let dragged = Rect { x: 100, y: 100, width: 50, height: 50 };
-        let other = Rect { x: 95, y: 200, width: 50, height: 50 };
+        // Other window in same row (Y exactly aligned) for horizontal alignment only
+        let other = Rect { x: 95, y: 100, width: 50, height: 50 };
         // Dragged right: 150, other right: 145, distance 5
         let result = find_snap_position(dragged, &[(0, other)], 15);
         assert_eq!(result, Some(Position::new(95, 100))); // X moves by -5
@@ -169,7 +183,8 @@ mod tests {
     #[test]
     fn test_align_top_edges() {
         let dragged = Rect { x: 100, y: 105, width: 50, height: 50 };
-        let other = Rect { x: 200, y: 100, width: 50, height: 50 };
+        // Other window in same column (X exactly aligned) for vertical alignment only
+        let other = Rect { x: 100, y: 100, width: 50, height: 50 };
         let result = find_snap_position(dragged, &[(0, other)], 15);
         assert_eq!(result, Some(Position::new(100, 100))); // Y aligned
     }
@@ -202,8 +217,10 @@ mod tests {
     #[test]
     fn test_multiple_windows_independent_axes() {
         let dragged = Rect { x: 105, y: 205, width: 50, height: 50 };
-        let snap_x = Rect { x: 100, y: 500, width: 50, height: 50 }; // X alignment
-        let snap_y = Rect { x: 500, y: 200, width: 50, height: 50 }; // Y alignment
+        // snap_x in same row (Y within threshold) for horizontal alignment
+        let snap_x = Rect { x: 100, y: 200, width: 50, height: 50 };
+        // snap_y in same column (X within threshold) for vertical alignment  
+        let snap_y = Rect { x: 100, y: 200, width: 50, height: 50 };
         let result = find_snap_position(dragged, &[(0, snap_x), (1, snap_y)], 15);
         assert_eq!(result, Some(Position::new(100, 200))); // X from first, Y from second
     }
