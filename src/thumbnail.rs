@@ -14,7 +14,7 @@ use x11rb::wrapper::ConnectionExt as WrapperExt;
 use crate::config::DisplayConfig;
 use crate::constants::{mouse, positioning, x11};
 use crate::font::FontRenderer;
-use crate::types::{Dimensions, Position};
+use crate::types::{Dimensions, Position, ThumbnailState};
 use crate::x11_utils::{get_pictformat, to_fixed, AppContext};
 
 #[derive(Debug, Default)]
@@ -28,9 +28,7 @@ pub struct InputState {
 pub struct Thumbnail<'a> {
     // === Application State (public, frequently accessed) ===
     pub character_name: String,
-    pub focused: bool,
-    pub visible: bool,
-    pub minimized: bool,
+    pub state: ThumbnailState,
     pub input_state: InputState,
     
     // === Geometry (public, immutable after creation) ===
@@ -302,9 +300,7 @@ impl<'a> Thumbnail<'a> {
         let thumbnail = Self {
             // Application State
             character_name,
-            focused: false,
-            visible: true,
-            minimized: false,
+            state: ThumbnailState::default(), // Start in unfocused normal state
             input_state: InputState::default(),
             
             // Geometry
@@ -341,12 +337,19 @@ impl<'a> Thumbnail<'a> {
     }
 
     pub fn visibility(&mut self, visible: bool) -> Result<()> {
-        if visible == self.visible {return Ok(());}
-        self.visible = visible;
+        let currently_visible = self.state.is_visible();
+        if visible == currently_visible {
+            return Ok(());
+        }
+        
         if visible {
+            // Restore from Hidden state to Normal (unfocused)
+            self.state = ThumbnailState::Normal { focused: false };
             self.conn.map_window(self.window)
                 .context(format!("Failed to map window for '{}'", self.character_name))?;
         } else {
+            // Hide the window
+            self.state = ThumbnailState::Hidden;
             self.conn.unmap_window(self.window)
                 .context(format!("Failed to unmap window for '{}'", self.character_name))?;
         }
@@ -425,7 +428,7 @@ impl<'a> Thumbnail<'a> {
     }
 
     pub fn minimized(&mut self) -> Result<()> {
-        self.minimized = true;
+        self.state = ThumbnailState::Minimized;
         self.border(false)
             .context(format!("Failed to clear border for minimized window '{}'", self.character_name))?;
         let extents = self

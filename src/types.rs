@@ -133,6 +133,42 @@ impl TextOffset {
     }
 }
 
+/// Thumbnail lifecycle state
+/// Using an enum makes invalid states (e.g., focused + minimized) impossible to represent
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThumbnailState {
+    /// Visible and available for interaction (may or may not have focus)
+    Normal { focused: bool },
+    /// Window is minimized by the window manager
+    Minimized,
+    /// Hidden due to hide_when_no_focus feature (all EVE windows unfocused)
+    Hidden,
+}
+
+impl ThumbnailState {
+    /// Check if the thumbnail should be visible on screen
+    pub fn is_visible(&self) -> bool {
+        matches!(self, Self::Normal { .. } | Self::Minimized)
+    }
+    
+    /// Check if the thumbnail currently has input focus
+    pub fn is_focused(&self) -> bool {
+        matches!(self, Self::Normal { focused: true })
+    }
+    
+    /// Check if the thumbnail is minimized by the window manager
+    pub fn is_minimized(&self) -> bool {
+        matches!(self, Self::Minimized)
+    }
+}
+
+impl Default for ThumbnailState {
+    fn default() -> Self {
+        // New thumbnails start in unfocused normal state
+        Self::Normal { focused: false }
+    }
+}
+
 /// Per-character settings: position and thumbnail dimensions
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CharacterSettings {
@@ -251,5 +287,45 @@ mod tests {
         let offset2 = TextOffset::new(15, 25);
         assert_eq!(offset2.x, 15);
         assert_eq!(offset2.y, 25);
+    }
+
+    #[test]
+    fn test_thumbnail_state_normal_unfocused() {
+        let state = ThumbnailState::Normal { focused: false };
+        assert!(state.is_visible());
+        assert!(!state.is_focused());
+        assert!(!state.is_minimized());
+    }
+
+    #[test]
+    fn test_thumbnail_state_normal_focused() {
+        let state = ThumbnailState::Normal { focused: true };
+        assert!(state.is_visible());
+        assert!(state.is_focused());
+        assert!(!state.is_minimized());
+    }
+
+    #[test]
+    fn test_thumbnail_state_minimized() {
+        let state = ThumbnailState::Minimized;
+        assert!(state.is_visible());
+        assert!(!state.is_focused());
+        assert!(state.is_minimized());
+    }
+
+    #[test]
+    fn test_thumbnail_state_hidden() {
+        let state = ThumbnailState::Hidden;
+        assert!(!state.is_visible());
+        assert!(!state.is_focused());
+        assert!(!state.is_minimized());
+    }
+
+    #[test]
+    fn test_thumbnail_state_default() {
+        let state = ThumbnailState::default();
+        assert_eq!(state, ThumbnailState::Normal { focused: false });
+        assert!(state.is_visible());
+        assert!(!state.is_focused());
     }
 }

@@ -11,7 +11,7 @@ use crate::cycle_state::CycleState;
 use crate::persistence::SavedState;
 use crate::snapping::{self, Rect};
 use crate::thumbnail::Thumbnail;
-use crate::types::Position;
+use crate::types::{Position, ThumbnailState};
 use crate::x11_utils::{is_window_eve, AppContext};
 
 /// Handle DamageNotify events - update damaged thumbnail
@@ -67,11 +67,11 @@ fn handle_focus_in(
     event: FocusInEvent,
 ) -> Result<()> {
     if let Some(thumbnail) = eves.get_mut(&event.event) {
-        thumbnail.minimized = false;
-        thumbnail.focused = true;
+        // Transition to focused normal state (from minimized or unfocused)
+        thumbnail.state = ThumbnailState::Normal { focused: true };
         thumbnail.border(true)
             .context(format!("Failed to update border on focus for '{}'", thumbnail.character_name))?;
-        if ctx.config.hide_when_no_focus && eves.values().any(|x| !x.visible) {
+        if ctx.config.hide_when_no_focus && eves.values().any(|x| !x.state.is_visible()) {
             for thumbnail in eves.values_mut() {
                 thumbnail.visibility(true)
                     .context(format!("Failed to show thumbnail '{}' on focus", thumbnail.character_name))?;
@@ -88,10 +88,11 @@ fn handle_focus_out(
     event: FocusOutEvent,
 ) -> Result<()> {
     if let Some(thumbnail) = eves.get_mut(&event.event) {
-        thumbnail.focused = false;
+        // Transition to unfocused normal state
+        thumbnail.state = ThumbnailState::Normal { focused: false };
         thumbnail.border(false)
             .context(format!("Failed to clear border on focus loss for '{}'", thumbnail.character_name))?;
-        if ctx.config.hide_when_no_focus && eves.values().all(|x| !x.focused && !x.minimized) {
+        if ctx.config.hide_when_no_focus && eves.values().all(|x| !x.state.is_focused() && !x.state.is_minimized()) {
             for thumbnail in eves.values_mut() {
                 thumbnail.visibility(false)
                     .context(format!("Failed to hide thumbnail '{}' on focus loss", thumbnail.character_name))?;
@@ -110,7 +111,7 @@ fn handle_button_press(
 ) -> Result<()> {
     if let Some((_, thumbnail)) = eves
         .iter_mut()
-        .find(|(_, thumb)| thumb.is_hovered(event.root_x, event.root_y) && thumb.visible)
+        .find(|(_, thumb)| thumb.is_hovered(event.root_x, event.root_y) && thumb.state.is_visible())
     {
         let geom = ctx.conn.get_geometry(thumbnail.window)
             .context("Failed to send geometry query on button press")?
@@ -185,7 +186,7 @@ fn handle_motion_notify(
     // Build list of other thumbnails for snapping (query actual positions)
     let others: Vec<_> = eves
         .iter()
-        .filter(|(_, t)| !t.input_state.dragging && t.visible)
+        .filter(|(_, t)| !t.input_state.dragging && t.state.is_visible())
         .filter_map(|(win, t)| {
             ctx.conn.get_geometry(t.window).ok()
                 .and_then(|req| req.reply().ok())
