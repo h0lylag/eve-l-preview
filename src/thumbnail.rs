@@ -260,6 +260,36 @@ impl<'a> Thumbnail<'a> {
 
         // Create window and setup properties
         let window = Self::create_window(ctx, &character_name, x, y, dimensions)?;
+        
+        // Setup a cleanup guard that destroys the window if we fail during initialization
+        // This prevents leaking the window if later steps fail
+        struct WindowGuard<'a> {
+            conn: &'a RustConnection,
+            window: Window,
+            character_name: String,
+            should_cleanup: bool,
+        }
+        
+        impl Drop for WindowGuard<'_> {
+            fn drop(&mut self) {
+                if self.should_cleanup {
+                    if let Err(e) = self.conn.destroy_window(self.window) {
+                        error!("Failed to cleanup window {} for '{}' after initialization failure: {}", 
+                               self.window, self.character_name, e);
+                    }
+                    // Flush to ensure cleanup is sent to server
+                    let _ = self.conn.flush();
+                }
+            }
+        }
+        
+        let mut window_guard = WindowGuard {
+            conn: ctx.conn,
+            window,
+            character_name: character_name.clone(),
+            should_cleanup: true,
+        };
+        
         Self::setup_window_properties(ctx, window, &character_name)?;
 
         // Create rendering resources
@@ -303,6 +333,9 @@ impl<'a> Thumbnail<'a> {
         // Render initial name overlay
         thumbnail.update_name()
             .context(format!("Failed to render initial name overlay for '{}'", thumbnail.character_name))?;
+        
+        // Success! Disable cleanup guard since Thumbnail's Drop will handle it now
+        window_guard.should_cleanup = false;
         
         Ok(thumbnail)
     }
@@ -621,19 +654,44 @@ impl<'a> Thumbnail<'a> {
 
 impl Drop for Thumbnail<'_> {
     fn drop(&mut self) {
-        if let Err(e) = (|| {
-            self.conn.damage_destroy(self.damage)?;
-            self.conn.free_gc(self.overlay_gc)?;
-            self.conn.render_free_picture(self.overlay_picture)?;
-            self.conn.render_free_picture(self.src_picture)?;
-            self.conn.render_free_picture(self.dst_picture)?;
-            self.conn.render_free_picture(self.border_fill)?;
-            self.conn.free_pixmap(self.overlay_pixmap)?;
-            self.conn.destroy_window(self.window)?;
-            self.conn.flush()?;
-            Ok::<(), anyhow::Error>(())
-        })() {
-            tracing::error!("error during thumbnail drop: {e:?}");
+        // Clean up each resource independently to prevent cascade failures
+        // If one cleanup fails, we still attempt to clean up the rest
+        
+        if let Err(e) = self.conn.damage_destroy(self.damage) {
+            error!("Failed to destroy damage {}: {}", self.damage, e);
+        }
+        
+        if let Err(e) = self.conn.free_gc(self.overlay_gc) {
+            error!("Failed to free GC {}: {}", self.overlay_gc, e);
+        }
+        
+        if let Err(e) = self.conn.render_free_picture(self.overlay_picture) {
+            error!("Failed to free overlay picture {}: {}", self.overlay_picture, e);
+        }
+        
+        if let Err(e) = self.conn.render_free_picture(self.src_picture) {
+            error!("Failed to free source picture {}: {}", self.src_picture, e);
+        }
+        
+        if let Err(e) = self.conn.render_free_picture(self.dst_picture) {
+            error!("Failed to free destination picture {}: {}", self.dst_picture, e);
+        }
+        
+        if let Err(e) = self.conn.render_free_picture(self.border_fill) {
+            error!("Failed to free border fill picture {}: {}", self.border_fill, e);
+        }
+        
+        if let Err(e) = self.conn.free_pixmap(self.overlay_pixmap) {
+            error!("Failed to free pixmap {}: {}", self.overlay_pixmap, e);
+        }
+        
+        if let Err(e) = self.conn.destroy_window(self.window) {
+            error!("Failed to destroy window {} for '{}': {}", 
+                   self.window, self.character_name, e);
+        }
+        
+        if let Err(e) = self.conn.flush() {
+            error!("Failed to flush X11 connection during cleanup: {}", e);
         }
     }
 }
