@@ -10,14 +10,6 @@ use x11rb::protocol::render::Color;
 use crate::color::{HexColor, Opacity};
 use crate::types::{CharacterSettings, Position};
 
-/// Default thumbnail dimensions for new characters
-/// Returns (width, height) as a tuple
-fn default_thumbnail_size(_screen_width: u16, _screen_height: u16) -> (u16, u16) {
-    // Fixed default size that works well across different setups
-    // Each character can customize their dimensions independently
-    (250, 141)
-}
-
 /// Immutable display settings (loaded once at startup)
 /// Can be borrowed by Thumbnails without RefCell
 #[derive(Debug, Clone)]
@@ -67,6 +59,14 @@ pub struct GlobalSettings {
     #[serde(default = "default_snap_threshold")]
     pub snap_threshold: u16,
     
+    /// Default thumbnail width for new characters
+    #[serde(default = "default_width")]
+    pub default_width: u16,
+    
+    /// Default thumbnail height for new characters
+    #[serde(default = "default_height")]
+    pub default_height: u16,
+    
     /// Character order for hotkey cycling (Tab/Shift+Tab)
     /// Characters are auto-added when first seen, but can be manually ordered
     #[serde(default)]
@@ -75,6 +75,14 @@ pub struct GlobalSettings {
 
 fn default_snap_threshold() -> u16 {
     15
+}
+
+fn default_width() -> u16 {
+    250
+}
+
+fn default_height() -> u16 {
+    141
 }
 
 fn serialize_color<S>(hex: &String, serializer: S) -> Result<S::Ok, S::Error>
@@ -100,8 +108,9 @@ impl PersistentState {
     }
 
     /// Get default thumbnail dimensions for screen size
-    pub fn default_thumbnail_size(&self, screen_width: u16, screen_height: u16) -> (u16, u16) {
-        default_thumbnail_size(screen_width, screen_height)
+    pub fn default_thumbnail_size(&self, _screen_width: u16, _screen_height: u16) -> (u16, u16) {
+        // Use configured defaults from TOML
+        (self.global.default_width, self.global.default_height)
     }
     
     /// Update hotkey order and save
@@ -156,6 +165,16 @@ impl PersistentState {
             if let Ok(mut state) = toml::from_str::<PersistentState>(&contents) {
                 // Apply env var overrides
                 state.apply_env_overrides();
+                
+                // Auto-save if config is missing new fields (e.g., default_width/default_height)
+                // This ensures existing configs get updated with new options
+                if !contents.contains("default_width") || !contents.contains("default_height") {
+                    info!("Updating config with new fields (default_width, default_height)");
+                    if let Err(e) = state.save() {
+                        error!("Failed to update config: {e:?}");
+                    }
+                }
+                
                 return state;
             }
         }
@@ -281,6 +300,8 @@ impl PersistentState {
                     .map(|x| x.parse().unwrap_or(false))
                     .unwrap_or(false),
                 snap_threshold: 15,
+                default_width: 250,
+                default_height: 141,
                 // Example hotkey order - edit this with your character names!
                 hotkey_order: vec![
                     "Main Character".to_string(),
@@ -347,6 +368,8 @@ mod tests {
             text_background_hex: text_background_hex.to_string(),
             hide_when_no_focus,
             snap_threshold,
+            default_width: 250,
+            default_height: 141,
             hotkey_order: Vec::new(),
         }
     }
