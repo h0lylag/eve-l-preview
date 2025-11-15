@@ -14,7 +14,7 @@ pub enum CycleCommand {
 
 /// Find all keyboard devices that support Tab key
 fn find_all_keyboard_devices() -> Result<Vec<Device>> {
-    info!("Scanning {} for keyboard devices...", paths::DEV_INPUT);
+    info!(path = %paths::DEV_INPUT, "Scanning for keyboard devices...");
     
     let mut devices = Vec::new();
     
@@ -28,10 +28,9 @@ fn find_all_keyboard_devices() -> Result<Vec<Device>> {
         if let Ok(device) = Device::open(&path) {
             // Check if it has Tab key (indicates keyboard)
             if let Some(keys) = device.supported_keys() {
-                if keys.contains(Key::KEY_TAB) {
+                    if keys.contains(Key::KEY_TAB) {
                     let key_count = keys.iter().count();
-                    info!("Found keyboard device: {} (name: {:?}, {} keys)", 
-                          path.display(), device.name(), key_count);
+                    info!(device_path = %path.display(), name = ?device.name(), key_count = key_count, "Found keyboard device");
                     devices.push(device);
                 }
             }
@@ -48,7 +47,7 @@ fn find_all_keyboard_devices() -> Result<Vec<Device>> {
         )
     }
 
-    info!("Listening on {} keyboard device(s)", devices.len());
+    info!(count = devices.len(), "Listening on keyboard device(s)");
     
     Ok(devices)
 }
@@ -61,9 +60,9 @@ pub fn spawn_listener(sender: Sender<CycleCommand>) -> Result<Vec<thread::JoinHa
     for device in devices {
         let sender = sender.clone();
         let handle = thread::spawn(move || {
-            info!("Hotkey listener started (device: {:?})", device.name());
+            info!(device = ?device.name(), "Hotkey listener started");
             if let Err(e) = listen_for_hotkeys(device, sender) {
-                error!("Hotkey listener error: {}", e);
+                error!(error = %e, "Hotkey listener error");
             }
         });
         handles.push(handle);
@@ -85,7 +84,7 @@ fn listen_for_hotkeys(mut device: Device, sender: Sender<CycleCommand>) -> Resul
             // Log all key events for debugging
             if event.event_type() == EventType::KEY {
                 if let InputEventKind::Key(key) = event.kind() {
-                    debug!("Key event: {:?} value={}", key, event.value());
+                    debug!(key = ?key, value = event.value(), "Key event");
                 }
             }
 
@@ -100,7 +99,7 @@ fn listen_for_hotkeys(mut device: Device, sender: Sender<CycleCommand>) -> Resul
                 match key {
                     Key::KEY_LEFTSHIFT | Key::KEY_RIGHTSHIFT => {
                         shift_pressed = pressed;
-                        debug!("Shift: {}", if pressed { "pressed" } else { "released" });
+                        debug!(shift_pressed = pressed, "Shift state changed");
                     }
                     Key::KEY_TAB if pressed => {
                         // Only trigger on key press, not repeat or release
@@ -110,10 +109,7 @@ fn listen_for_hotkeys(mut device: Device, sender: Sender<CycleCommand>) -> Resul
                             CycleCommand::Forward
                         };
 
-                        info!(
-                            "Tab pressed (shift={}), sending {:?}",
-                            shift_pressed, command
-                        );
+                        info!(shift = shift_pressed, command = ?command, "Tab hotkey pressed, sending command");
 
                         sender.send(command)
                             .context("Failed to send cycle command")?;
@@ -132,9 +128,9 @@ pub fn check_permissions() -> bool {
 
 /// Print helpful error message if permissions missing
 pub fn print_permission_error() {
-    error!("Cannot access {} devices", paths::DEV_INPUT);
-    error!("Hotkeys require '{}' group membership:", permissions::INPUT_GROUP);
-    error!("  {}", permissions::ADD_TO_INPUT_GROUP);
+    error!(path = %paths::DEV_INPUT, "Cannot access input devices");
+    error!(group = %permissions::INPUT_GROUP, "Hotkeys require group membership");
+    error!(command = %permissions::ADD_TO_INPUT_GROUP, "Add user to input group");
     error!("  Then log out and back in");
-    warn!("Continuing without hotkey support...");
+    warn!(continuing = true, "Continuing without hotkey support...");
 }

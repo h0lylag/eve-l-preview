@@ -149,9 +149,13 @@ impl<'a> Thumbnail<'a> {
 
         // Map window to make it visible
         ctx.conn.map_window(window)
-            .inspect_err(|e| error!("Failed to map thumbnail window {}: {:?}", window, e))
+            .inspect_err(|e| error!(window = window, error = ?e, "Failed to map thumbnail window"))
             .context(format!("Failed to map thumbnail window for '{}'", character_name))?;
-        info!("Mapped thumbnail window {} for '{}'", window, character_name);
+        info!(
+            window = window,
+            character = %character_name,
+            "Mapped thumbnail window"
+        );
 
         Ok(())
     }
@@ -253,8 +257,14 @@ impl<'a> Thumbnail<'a> {
                 src_geom.y + positioning::DEFAULT_SPAWN_OFFSET,
             )
         });
-        info!("Creating thumbnail for '{}' at position ({}, {}) with size {}x{}", 
-              character_name, x, y, dimensions.width, dimensions.height);
+        info!(
+            character = %character_name,
+            x = x,
+            y = y,
+            width = dimensions.width,
+            height = dimensions.height,
+            "Creating thumbnail"
+        );
 
         // Create window and setup properties
         let window = Self::create_window(ctx, &character_name, x, y, dimensions)?;
@@ -272,8 +282,12 @@ impl<'a> Thumbnail<'a> {
             fn drop(&mut self) {
                 if self.should_cleanup {
                     if let Err(e) = self.conn.destroy_window(self.window) {
-                        error!("Failed to cleanup window {} for '{}' after initialization failure: {}", 
-                               self.window, self.character_name, e);
+                        error!(
+                            window = self.window,
+                            character = %self.character_name,
+                            error = %e,
+                            "Failed to cleanup window after initialization failure"
+                        );
                     }
                     // Flush to ensure cleanup is sent to server
                     let _ = self.conn.flush();
@@ -612,7 +626,7 @@ impl<'a> Thumbnail<'a> {
         .context(format!("Failed to send focus event for '{}'", self.character_name))?;
         self.conn.flush()
             .context("Failed to flush X11 connection after focus event")?;
-        info!("focused window: window={}", self.window);
+        info!(window = self.window, character = %self.character_name, "Focused window");
         Ok(())
     }
 
@@ -661,40 +675,44 @@ impl Drop for Thumbnail<'_> {
         // If one cleanup fails, we still attempt to clean up the rest
         
         if let Err(e) = self.conn.damage_destroy(self.damage) {
-            error!("Failed to destroy damage {}: {}", self.damage, e);
+            error!(damage = self.damage, error = %e, "Failed to destroy damage");
         }
         
         if let Err(e) = self.conn.free_gc(self.overlay_gc) {
-            error!("Failed to free GC {}: {}", self.overlay_gc, e);
+            error!(gc = self.overlay_gc, error = %e, "Failed to free GC");
         }
         
         if let Err(e) = self.conn.render_free_picture(self.overlay_picture) {
-            error!("Failed to free overlay picture {}: {}", self.overlay_picture, e);
+            error!(picture = self.overlay_picture, error = %e, "Failed to free overlay picture");
         }
         
         if let Err(e) = self.conn.render_free_picture(self.src_picture) {
-            error!("Failed to free source picture {}: {}", self.src_picture, e);
+            error!(picture = self.src_picture, error = %e, "Failed to free source picture");
         }
         
         if let Err(e) = self.conn.render_free_picture(self.dst_picture) {
-            error!("Failed to free destination picture {}: {}", self.dst_picture, e);
+            error!(picture = self.dst_picture, error = %e, "Failed to free destination picture");
         }
         
         if let Err(e) = self.conn.render_free_picture(self.border_fill) {
-            error!("Failed to free border fill picture {}: {}", self.border_fill, e);
+            error!(picture = self.border_fill, error = %e, "Failed to free border fill picture");
         }
         
         if let Err(e) = self.conn.free_pixmap(self.overlay_pixmap) {
-            error!("Failed to free pixmap {}: {}", self.overlay_pixmap, e);
+            error!(pixmap = self.overlay_pixmap, error = %e, "Failed to free pixmap");
         }
         
         if let Err(e) = self.conn.destroy_window(self.window) {
-            error!("Failed to destroy window {} for '{}': {}", 
-                   self.window, self.character_name, e);
+            error!(
+                window = self.window,
+                character = %self.character_name,
+                error = %e,
+                "Failed to destroy window"
+            );
         }
         
         if let Err(e) = self.conn.flush() {
-            error!("Failed to flush X11 connection during cleanup: {}", e);
+            error!(error = %e, "Failed to flush X11 connection during cleanup");
         }
     }
 }

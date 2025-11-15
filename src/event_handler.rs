@@ -4,6 +4,7 @@ use x11rb::connection::Connection;
 use x11rb::protocol::damage::ConnectionExt as DamageExt;
 use x11rb::protocol::Event::{self, CreateNotify, DamageNotify, DestroyNotify, PropertyNotify};
 use x11rb::protocol::xproto::*;
+use tracing::{debug, error, info, warn};
 
 use crate::config::PersistentState;
 use crate::constants::mouse;
@@ -15,11 +16,14 @@ use crate::types::{Position, ThumbnailState};
 use crate::x11_utils::{is_window_eve, AppContext};
 
 /// Handle DamageNotify events - update damaged thumbnail
+#[tracing::instrument(skip(ctx, eves))]
 fn handle_damage_notify(ctx: &AppContext, eves: &HashMap<Window, Thumbnail>, event: x11rb::protocol::damage::NotifyEvent) -> Result<()> {
+    info!(damage = event.damage, "DamageNotify received");
     if let Some(thumbnail) = eves
         .values()
         .find(|thumbnail| thumbnail.damage == event.damage)
     {
+        info!(window = thumbnail.window, character = %thumbnail.character_name, "Updating thumbnail for damage");
         thumbnail.update()
             .context(format!("Failed to update thumbnail for damage event (damage={})", event.damage))?;
         ctx.conn.damage_subtract(event.damage, 0u32, 0u32)
@@ -31,6 +35,7 @@ fn handle_damage_notify(ctx: &AppContext, eves: &HashMap<Window, Thumbnail>, eve
 }
 
 /// Handle CreateNotify events - create thumbnail for new EVE window
+#[tracing::instrument(skip(ctx, persistent_state, eves, session_state, cycle_state, check_and_create_window))]
 fn handle_create_notify<'a>(
     ctx: &AppContext<'a>,
     persistent_state: &PersistentState,
@@ -40,9 +45,11 @@ fn handle_create_notify<'a>(
     cycle_state: &mut CycleState,
     check_and_create_window: &impl Fn(&AppContext<'a>, &PersistentState, Window, &SavedState) -> Result<Option<Thumbnail<'a>>>,
 ) -> Result<()> {
+    info!(window = event.window, "CreateNotify received");
     if let Some(thumbnail) = check_and_create_window(ctx, persistent_state, event.window, session_state)
         .context(format!("Failed to check/create window for new window {}", event.window))? {
         // Register with cycle state
+        info!(window = event.window, character = %thumbnail.character_name, "Created thumbnail for new EVE window");
         cycle_state.add_window(thumbnail.character_name.clone(), event.window);
         eves.insert(event.window, thumbnail);
     }
@@ -50,22 +57,26 @@ fn handle_create_notify<'a>(
 }
 
 /// Handle DestroyNotify events - remove destroyed window
+#[tracing::instrument(skip(eves, cycle_state))]
 fn handle_destroy_notify(
     eves: &mut HashMap<Window, Thumbnail>,
     event: DestroyNotifyEvent,
     cycle_state: &mut CycleState,
 ) -> Result<()> {
+    info!(window = event.window, "DestroyNotify received");
     cycle_state.remove_window(event.window);
     eves.remove(&event.window);
     Ok(())
 }
 
 /// Handle FocusIn events - update focused state and visibility
+#[tracing::instrument(skip(ctx, eves))]
 fn handle_focus_in(
     ctx: &AppContext,
     eves: &mut HashMap<Window, Thumbnail>,
     event: FocusInEvent,
 ) -> Result<()> {
+    info!(window = event.event, "FocusIn received");
     if let Some(thumbnail) = eves.get_mut(&event.event) {
         // Transition to focused normal state (from minimized or unfocused)
         thumbnail.state = ThumbnailState::Normal { focused: true };
@@ -73,6 +84,7 @@ fn handle_focus_in(
             .context(format!("Failed to update border on focus for '{}'", thumbnail.character_name))?;
         if ctx.config.hide_when_no_focus && eves.values().any(|x| !x.state.is_visible()) {
             for thumbnail in eves.values_mut() {
+                info!(character = %thumbnail.character_name, "Revealing thumbnail due to focus change");
                 thumbnail.visibility(true)
                     .context(format!("Failed to show thumbnail '{}' on focus", thumbnail.character_name))?;
             }
@@ -82,11 +94,13 @@ fn handle_focus_in(
 }
 
 /// Handle FocusOut events - update focused state and visibility  
+#[tracing::instrument(skip(ctx, eves))]
 fn handle_focus_out(
     ctx: &AppContext,
     eves: &mut HashMap<Window, Thumbnail>,
     event: FocusOutEvent,
 ) -> Result<()> {
+    info!(window = event.event, "FocusOut received");
     if let Some(thumbnail) = eves.get_mut(&event.event) {
         // Transition to unfocused normal state
         thumbnail.state = ThumbnailState::Normal { focused: false };
@@ -94,6 +108,7 @@ fn handle_focus_out(
             .context(format!("Failed to clear border on focus loss for '{}'", thumbnail.character_name))?;
         if ctx.config.hide_when_no_focus && eves.values().all(|x| !x.state.is_focused() && !x.state.is_minimized()) {
             for thumbnail in eves.values_mut() {
+                info!(character = %thumbnail.character_name, "Hiding thumbnail due to focus loss");
                 thumbnail.visibility(false)
                     .context(format!("Failed to hide thumbnail '{}' on focus loss", thumbnail.character_name))?;
             }
@@ -103,16 +118,19 @@ fn handle_focus_out(
 }
 
 /// Handle ButtonPress events - start dragging or set current character
+#[tracing::instrument(skip(ctx, eves, cycle_state))]
 fn handle_button_press(
     ctx: &AppContext,
     eves: &mut HashMap<Window, Thumbnail>,
     event: ButtonPressEvent,
     cycle_state: &mut CycleState,
 ) -> Result<()> {
+    info!(x = event.root_x, y = event.root_y, detail = event.detail, "ButtonPress received");
     if let Some((_, thumbnail)) = eves
         .iter_mut()
         .find(|(_, thumb)| thumb.is_hovered(event.root_x, event.root_y) && thumb.state.is_visible())
     {
+        info!(window = thumbnail.window, character = %thumbnail.character_name, "ButtonPress on thumbnail");
         let geom = ctx.conn.get_geometry(thumbnail.window)
             .context("Failed to send geometry query on button press")?
             .reply()
@@ -122,16 +140,19 @@ fn handle_button_press(
         // Only allow dragging with right-click
         if event.detail == mouse::BUTTON_RIGHT {
             thumbnail.input_state.dragging = true;
+            info!(window = thumbnail.window, "Started dragging thumbnail");
         }
         // Left-click sets current character for cycling
         if event.detail == mouse::BUTTON_LEFT {
             cycle_state.set_current(&thumbnail.character_name);
+            info!(character = %thumbnail.character_name, "Set current character via click");
         }
     }
     Ok(())
 }
 
 /// Handle ButtonRelease events - focus window and save position after drag
+#[tracing::instrument(skip(ctx, persistent_state, eves, session_state))]
 fn handle_button_release(
     ctx: &AppContext,
     persistent_state: &mut PersistentState,
@@ -139,10 +160,12 @@ fn handle_button_release(
     event: ButtonReleaseEvent,
     session_state: &mut SavedState,
 ) -> Result<()> {
+    info!(x = event.root_x, y = event.root_y, detail = event.detail, "ButtonRelease received");
     if let Some((_, thumbnail)) = eves
         .iter_mut()
         .find(|(_, thumb)| thumb.is_hovered(event.root_x, event.root_y))
     {
+        info!(window = thumbnail.window, character = %thumbnail.character_name, "ButtonRelease on thumbnail");
         // Left-click focuses the window
         // (dragging is only enabled for right-click, so left-click never drags)
         if event.detail == mouse::BUTTON_LEFT {
@@ -160,6 +183,7 @@ fn handle_button_release(
             
             // Update session state
             session_state.update_window_position(thumbnail.window, geom.x, geom.y);
+            info!(window = thumbnail.window, x = geom.x, y = geom.y, "Saved session position after drag");
             // Persist character position AND dimensions
             persistent_state.update_position(
                 &thumbnail.character_name,
@@ -177,6 +201,7 @@ fn handle_button_release(
 }
 
 /// Handle MotionNotify events - process drag motion with snapping
+#[tracing::instrument(skip(ctx, persistent_state, eves))]
 fn handle_motion_notify(
     ctx: &AppContext,
     persistent_state: &PersistentState,
@@ -184,6 +209,7 @@ fn handle_motion_notify(
     event: MotionNotifyEvent,
 ) -> Result<()> {
     // Build list of other thumbnails for snapping (query actual positions)
+    info!(x = event.root_x, y = event.root_y, "MotionNotify received");
     let others: Vec<_> = eves
         .iter()
         .filter(|(_, t)| !t.input_state.dragging && t.state.is_visible())
@@ -246,6 +272,8 @@ fn handle_drag_motion(
         others,
         snap_threshold,
     ).unwrap_or_else(|| Position::new(new_x, new_y));
+
+    info!(window = thumbnail.window, from_x = thumbnail.input_state.win_start.x, from_y = thumbnail.input_state.win_start.y, to_x = final_x, to_y = final_y, "Dragging thumbnail to new position");
 
     // Always reposition (let X11 handle no-op if position unchanged)
     thumbnail.reposition(final_x, final_y)?;

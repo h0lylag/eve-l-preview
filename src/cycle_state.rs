@@ -27,10 +27,7 @@ impl CycleState {
 
     /// Register a new EVE window (called from CreateNotify)
     pub fn add_window(&mut self, character_name: String, window: Window) {
-        debug!(
-            "Adding window for character '{}': {}",
-            character_name, window
-        );
+        debug!(character = %character_name, window = window, "Adding window for character");
         self.active_windows
             .insert(character_name.clone(), window);
 
@@ -47,7 +44,7 @@ impl CycleState {
             .find(|&(_, &w)| w == window)
             .map(|(k, v)| (k.clone(), *v))
         {
-            debug!("Removing window for character '{}': {}", name, window);
+            debug!(character = %name, window = window, "Removing window for character");
             self.active_windows.remove(&name);
 
             // If we removed the current character, clamp index
@@ -76,12 +73,12 @@ impl CycleState {
     /// Only cycles through characters in the configured hotkey_order list
     pub fn cycle_forward(&mut self) -> Option<(Window, String)> {
         if self.active_windows.is_empty() {
-            warn!("No active windows to cycle");
+            warn!(active_windows = self.active_windows.len(), "No active windows to cycle");
             return None;
         }
 
         if self.config_order.is_empty() {
-            warn!("Config order is empty - add character names to hotkey_order in config");
+            warn!(config_order_len = self.config_order.len(), "Config order is empty - add character names to hotkey_order in config");
             return None;
         }
 
@@ -92,16 +89,13 @@ impl CycleState {
             // Found an active character that's in the config order
             let character_name = &self.config_order[self.current_index];
             if let Some(&window) = self.active_windows.get(character_name) {
-                debug!(
-                    "Cycling forward to '{}' (index {})",
-                    character_name, self.current_index
-                );
+                debug!(character = %character_name, index = self.current_index, "Cycling forward to character");
                 return Some((window, character_name.clone()));
             }
 
             // Wrapped around without finding active character
             if self.current_index == start_index {
-                warn!("No active characters found in config order (configured characters may not be running)");
+                warn!(config_order_len = self.config_order.len(), active_windows = self.active_windows.len(), "No active characters found in config order (configured characters may not be running)");
                 return None;
             }
         }
@@ -112,12 +106,12 @@ impl CycleState {
     /// Only cycles through characters in the configured hotkey_order list
     pub fn cycle_backward(&mut self) -> Option<(Window, String)> {
         if self.active_windows.is_empty() {
-            warn!("No active windows to cycle");
+            warn!(active_windows = self.active_windows.len(), "No active windows to cycle");
             return None;
         }
 
         if self.config_order.is_empty() {
-            warn!("Config order is empty - add character names to hotkey_order in config");
+            warn!(config_order_len = self.config_order.len(), "Config order is empty - add character names to hotkey_order in config");
             return None;
         }
 
@@ -132,16 +126,13 @@ impl CycleState {
             // Found an active character that's in the config order
             let character_name = &self.config_order[self.current_index];
             if let Some(&window) = self.active_windows.get(character_name) {
-                debug!(
-                    "Cycling backward to '{}' (index {})",
-                    character_name, self.current_index
-                );
+                debug!(character = %character_name, index = self.current_index, "Cycling backward to character");
                 return Some((window, character_name.clone()));
             }
 
             // Wrapped around without finding active character
             if self.current_index == start_index {
-                warn!("No active characters found in config order (configured characters may not be running)");
+                warn!(config_order_len = self.config_order.len(), active_windows = self.active_windows.len(), "No active characters found in config order (configured characters may not be running)");
                 return None;
             }
         }
@@ -151,14 +142,11 @@ impl CycleState {
     /// Returns true if character exists in config order
     pub fn set_current(&mut self, character_name: &str) -> bool {
         if let Some(index) = self.config_order.iter().position(|c| c == character_name) {
-            debug!(
-                "Setting current character to '{}' (index {})",
-                character_name, index
-            );
+            debug!(character = %character_name, index = index, "Setting current character");
             self.current_index = index;
             true
         } else {
-            warn!("Character '{}' not in config order", character_name);
+            warn!(character = %character_name, "Character not in config order");
             false
         }
     }

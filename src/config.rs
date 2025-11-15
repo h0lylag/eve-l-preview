@@ -173,45 +173,45 @@ impl PersistentState {
         
         // Opacity already limited by u8 type (0-255), but clamp to 0-100 for percentage
         if self.global.opacity_percent > 100 {
-            warn!("opacity_percent {} exceeds 100, clamping to 100", self.global.opacity_percent);
+            warn!(opacity_percent = self.global.opacity_percent, "opacity_percent exceeds 100, clamping to 100");
             self.global.opacity_percent = 100;
         }
         
         // Border size should be reasonable (0-100 pixels)
         if self.global.border_size > MAX_BORDER_SIZE {
-            warn!("border_size {} exceeds {}, clamping", self.global.border_size, MAX_BORDER_SIZE);
+            warn!(border_size = self.global.border_size, max = MAX_BORDER_SIZE, "border_size exceeds maximum, clamping");
             self.global.border_size = MAX_BORDER_SIZE;
         }
         
         // Text size should be reasonable (1.0-200.0 pixels)
         if self.global.text_size < MIN_TEXT_SIZE {
-            warn!("text_size {} below minimum {}, clamping", self.global.text_size, MIN_TEXT_SIZE);
+            warn!(text_size = self.global.text_size, min = MIN_TEXT_SIZE, "text_size below minimum, clamping");
             self.global.text_size = MIN_TEXT_SIZE;
         } else if self.global.text_size > MAX_TEXT_SIZE {
-            warn!("text_size {} exceeds maximum {}, clamping", self.global.text_size, MAX_TEXT_SIZE);
+            warn!(text_size = self.global.text_size, max = MAX_TEXT_SIZE, "text_size exceeds maximum, clamping");
             self.global.text_size = MAX_TEXT_SIZE;
         }
         
         // Default dimensions should be non-zero (1-4096 pixels)
         if self.global.default_width < MIN_DIMENSION {
-            warn!("default_width {} below minimum {}, using {}", self.global.default_width, MIN_DIMENSION, default_width());
+            warn!(default_width = self.global.default_width, min = MIN_DIMENSION, using = default_width(), "default_width below minimum, using default");
             self.global.default_width = default_width();
         } else if self.global.default_width > MAX_DIMENSION {
-            warn!("default_width {} exceeds maximum {}, clamping", self.global.default_width, MAX_DIMENSION);
+            warn!(default_width = self.global.default_width, max = MAX_DIMENSION, "default_width exceeds maximum, clamping");
             self.global.default_width = MAX_DIMENSION;
         }
         
         if self.global.default_height < MIN_DIMENSION {
-            warn!("default_height {} below minimum {}, using {}", self.global.default_height, MIN_DIMENSION, default_height());
+            warn!(default_height = self.global.default_height, min = MIN_DIMENSION, using = default_height(), "default_height below minimum, using default");
             self.global.default_height = default_height();
         } else if self.global.default_height > MAX_DIMENSION {
-            warn!("default_height {} exceeds maximum {}, clamping", self.global.default_height, MAX_DIMENSION);
+            warn!(default_height = self.global.default_height, max = MAX_DIMENSION, "default_height exceeds maximum, clamping");
             self.global.default_height = MAX_DIMENSION;
         }
         
         // Snap threshold should be reasonable (0-1000 pixels, 0 = disabled)
         if self.global.snap_threshold > MAX_SNAP_THRESHOLD {
-            warn!("snap_threshold {} exceeds {}, clamping", self.global.snap_threshold, MAX_SNAP_THRESHOLD);
+            warn!(snap_threshold = self.global.snap_threshold, max = MAX_SNAP_THRESHOLD, "snap_threshold exceeds maximum, clamping");
             self.global.snap_threshold = MAX_SNAP_THRESHOLD;
         }
         
@@ -220,27 +220,27 @@ impl PersistentState {
             let mut changed = false;
             
             if settings.dimensions.width > 0 && settings.dimensions.width < MIN_DIMENSION {
-                warn!("Character '{}' width {} below minimum, using {}", character, settings.dimensions.width, self.global.default_width);
+                warn!(character = %character, width = settings.dimensions.width, using = self.global.default_width, "character width below minimum, using default");
                 settings.dimensions.width = self.global.default_width;
                 changed = true;
             } else if settings.dimensions.width > MAX_DIMENSION {
-                warn!("Character '{}' width {} exceeds maximum, clamping", character, settings.dimensions.width);
+                warn!(character = %character, width = settings.dimensions.width, max = MAX_DIMENSION, "character width exceeds maximum, clamping");
                 settings.dimensions.width = MAX_DIMENSION;
                 changed = true;
             }
             
             if settings.dimensions.height > 0 && settings.dimensions.height < MIN_DIMENSION {
-                warn!("Character '{}' height {} below minimum, using {}", character, settings.dimensions.height, self.global.default_height);
+                warn!(character = %character, height = settings.dimensions.height, using = self.global.default_height, "character height below minimum, using default");
                 settings.dimensions.height = self.global.default_height;
                 changed = true;
             } else if settings.dimensions.height > MAX_DIMENSION {
-                warn!("Character '{}' height {} exceeds maximum, clamping", character, settings.dimensions.height);
+                warn!(character = %character, height = settings.dimensions.height, max = MAX_DIMENSION, "character height exceeds maximum, clamping");
                 settings.dimensions.height = MAX_DIMENSION;
                 changed = true;
             }
             
             if changed {
-                info!("Corrected dimensions for character '{}': {}x{}", character, settings.dimensions.width, settings.dimensions.height);
+                info!(character = %character, width = settings.dimensions.width, height = settings.dimensions.height, "Corrected dimensions for character");
             }
         }
     }
@@ -256,14 +256,14 @@ impl PersistentState {
         let border_color = HexColor::parse(&self.global.border_color_hex)
             .map(|c| c.to_x11_color())
             .unwrap_or_else(|| {
-                error!("Invalid border_color hex, using default");
+                error!(border_color = %self.global.border_color_hex, "Invalid border_color hex, using default");
                 HexColor::from_argb32(0xFFFF0000).to_x11_color()
             });
         
         let text_foreground = HexColor::parse(&self.global.text_color_hex)
             .map(|c| c.argb32())  // Use raw ARGB, not premultiplied
             .unwrap_or_else(|| {
-                error!("Invalid text_color hex, using default");
+                error!(text_color = %self.global.text_color_hex, "Invalid text_color hex, using default");
                 HexColor::from_argb32(0xFF_FF_FF_FF).argb32()
             });
         
@@ -296,16 +296,16 @@ impl PersistentState {
                         info!("Updating config with new fields (default_width, default_height)");
                         if let Err(e) = state.save()
                             .context("Failed to save config after adding new fields") {
-                            error!("Failed to update config: {e:?}");
-                        }
+                                error!(error = ?e, "Failed to update config");
+                            }
                     }
                     
                     return state;
                 }
                 Err(e) => {
-                    error!("Failed to parse config file at {}: {}", config_path.display(), e);
-                    error!("Please fix the syntax errors in your config file.");
-                    error!("The file has been preserved - check for missing quotes around color values.");
+                    error!(path = %config_path.display(), error = %e, "Failed to parse config file");
+                    error!(path = %config_path.display(), "Please fix the syntax errors in your config file.");
+                    error!(path = %config_path.display(), "The file has been preserved - check for missing quotes around color values.");
                     // Don't overwrite the broken config - user needs to fix it
                     std::process::exit(1);
                 }
@@ -321,10 +321,9 @@ impl PersistentState {
         // Save for next time
         if let Err(e) = state.save()
             .context(format!("Failed to save new config to {}", config_path.display())) {
-            error!("Failed to save config: {e:?}");
+            error!(error = ?e, "Failed to save config");
         } else {
-            println!("Generated config file: {}", config_path.display());
-            println!("Edit it to customize settings (env vars still override)");
+            info!(path = %config_path.display(), "Generated config file for user to edit (env vars still override)");
         }
         
         state
@@ -356,8 +355,7 @@ impl PersistentState {
     /// This is called when a thumbnail is dragged or when dimensions change
     pub fn update_position(&mut self, character_name: &str, x: i16, y: i16, width: u16, height: u16) -> Result<()> {
         if !character_name.is_empty() {
-            info!("Saving position and dimensions for character '{}': ({}, {}) {}x{}", 
-                  character_name, x, y, width, height);
+        info!(character = %character_name, x = x, y = y, width = width, height = height, "Saving position and dimensions for character");
             let settings = CharacterSettings::new(x, y, width, height);
             self.character_positions.insert(character_name.to_string(), settings);
             self.save()
@@ -377,7 +375,7 @@ impl PersistentState {
         current_width: u16,
         current_height: u16,
     ) -> Result<Option<Position>> {
-        info!("Character change: '{}' → '{}'", old_name, new_name);
+    info!(old = %old_name, new = %new_name, "Character change");
         
         // Save old character's position and current dimensions
         if !old_name.is_empty() {
@@ -397,7 +395,7 @@ impl PersistentState {
         // Return new position if we have one saved for the new character
         if !new_name.is_empty() {
             if let Some(settings) = self.character_positions.get(new_name) {
-                info!("Moving to saved position for '{}': ({}, {})", new_name, settings.x, settings.y);
+                info!(character = %new_name, x = settings.x, y = settings.y, "Moving to saved position for character");
                 return Ok(Some(settings.position()));
             }
         }
@@ -412,9 +410,9 @@ impl PersistentState {
             if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"))
                 && let Ok(n) = u128::from_str_radix(hex, 16)
             {
-                return T::try_from(n).inspect_err(|e| error!("failed to parse '{var}' err={e:?}")).ok();
+                return T::try_from(n).inspect_err(|e| error!(var = %var, error = ?e, "failed to parse hex env var")).ok();
             } else {
-                return s.parse::<T>().inspect_err(|e| error!("failed to parse '{var}' err={e:?}")).ok();
+                return s.parse::<T>().inspect_err(|e| error!(var = %var, error = ?e, "failed to parse env var" )).ok();
             }
         }
         None

@@ -45,7 +45,7 @@ impl SavedState {
         // If character has a name (not just "EVE"), check character position from config
         if !character_name.is_empty() {
             if let Some(settings) = character_positions.get(character_name) {
-                info!("Using saved position for character '{}': Position {{ x: {}, y: {} }}", character_name, settings.x, settings.y);
+                info!(character = %character_name, x = settings.x, y = settings.y, "Using saved position for character");
                 return Some(settings.position());
             }
             
@@ -53,7 +53,7 @@ impl SavedState {
             // For now, new character always spawns centered
             if self.inherit_window_position {
                 if let Some(&pos) = self.window_positions.get(&window) {
-                    info!("Inheriting window position for new character '{}': {:?}", character_name, pos);
+                    info!(character = %character_name, position = ?pos, "Inheriting window position for new character");
                     return Some(pos);
                 }
             }
@@ -64,7 +64,7 @@ impl SavedState {
         
         // Logged-out window ("EVE" title) → use window position from this session
         if let Some(&pos) = self.window_positions.get(&window) {
-            info!("Using session position for logged-out window {}: {:?}", window, pos);
+            info!(window = window, position = ?pos, "Using session position for logged-out window");
             Some(pos)
         } else {
             None
@@ -74,7 +74,7 @@ impl SavedState {
     /// Update session position (window tracking)
     pub fn update_window_position(&mut self, window: Window, x: i16, y: i16) {
         self.window_positions.insert(window, Position::new(x, y));
-        info!("Saved session position for window {}: ({}, {})", window, x, y);
+        info!(window = window, x = x, y = y, "Saved session position for window");
     }
 }
 

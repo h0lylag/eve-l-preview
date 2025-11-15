@@ -75,10 +75,7 @@ pub fn get_pictformat(conn: &RustConnection, depth: u8, alpha: bool) -> Result<P
         .formats
         .iter()
         .find(|format| {
-            debug!(
-                "discovered Pictformat: {}, {}",
-                format.depth, format.direct.alpha_mask
-            );
+            debug!(depth = format.depth, alpha_mask = format.direct.alpha_mask, "discovered Pictformat");
             format.depth == depth
                 && if alpha {
                     format.direct.alpha_mask != 0
@@ -87,10 +84,7 @@ pub fn get_pictformat(conn: &RustConnection, depth: u8, alpha: bool) -> Result<P
                 }
         })
     {
-        debug!(
-            "using Pictformat: {}, {}",
-            format.depth, format.direct.alpha_mask
-        );
+        debug!(depth = format.depth, alpha_mask = format.direct.alpha_mask, "using Pictformat");
         Ok(format.id)
     } else {
         anyhow::bail!("Could not find suitable picture format (depth={}, alpha={}). Check RENDER extension support.", depth, alpha)

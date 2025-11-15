@@ -57,14 +57,21 @@ fn check_and_create_window<'a>(
                         || x.to_string_lossy().contains(wine::WINE_PRELOADER)
                 })
                 .inspect_err(|e| {
-                    error!("cant read link '/proc/{pid}/exe' assuming its wine: err={e:?}")
+                    error!(
+                        pid = pid,
+                        error = ?e,
+                        "Cannot read /proc/{pid}/exe, assuming wine process"
+                    );
                 })
                 .unwrap_or(true)
             {
                 return Ok(None); // Return if we can determine that the window is not running through wine.
             }
         } else {
-            warn!("_NET_WM_PID not set for window={window} assuming its wine");
+            warn!(
+                window = window,
+                "_NET_WM_PID not set, assuming wine process"
+            );
         }
     }
 
@@ -111,7 +118,11 @@ fn check_and_create_window<'a>(
         
         let thumbnail = Thumbnail::new(ctx, character_name.clone(), window, ctx.font_renderer, position, dimensions)
             .context(format!("Failed to create thumbnail for '{}' (window {})", character_name, window))?;
-        info!("constructed Thumbnail for eve window: window={window}");
+        info!(
+            window = window,
+            character = %character_name,
+            "Created thumbnail for EVE window"
+        );
         Ok(Some(thumbnail))
     } else {
         Ok(None)
@@ -182,8 +193,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (conn, screen_num) = x11rb::connect(None)
         .context("Failed to connect to X11 server. Is DISPLAY set correctly?")?;
     let screen = &conn.setup().roots[screen_num];
-    info!("successfully connected to x11: screen={screen_num}, dimensions={}x{}", 
-          screen.width_in_pixels, screen.height_in_pixels);
+    info!(
+        screen = screen_num,
+        width = screen.width_in_pixels,
+        height = screen.height_in_pixels,
+        "Connected to X11 server"
+    );
 
     // Load config with screen-aware defaults
     let mut persistent_state = PersistentState::load_with_screen(
@@ -191,10 +206,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         screen.height_in_pixels,
     );
     let config = persistent_state.build_display_config();
-    info!("config={:#?}", config);
+    info!(config = ?config, "Loaded display configuration");
     
     let mut session_state = SavedState::new();
-    info!("loaded {} character positions from config", persistent_state.character_positions.len());
+    info!(
+        count = persistent_state.character_positions.len(),
+        "Loaded character positions from config"
+    );
     
     // Initialize cycle state from config
     let mut cycle_state = CycleState::new(persistent_state.global.hotkey_order.clone());
@@ -204,13 +222,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Spawn hotkey listener (optional - skip if permissions denied)
     let _hotkey_handle = if hotkeys::check_permissions() {
-        match spawn_listener(hotkey_tx) {
+                match spawn_listener(hotkey_tx) {
             Ok(handle) => {
-                info!("Hotkey support enabled (Tab/Shift+Tab)");
+                info!(enabled = true, "Hotkey support enabled (Tab/Shift+Tab for character cycling)");
                 Some(handle)
             }
             Err(e) => {
-                error!("Failed to start hotkey listener: {}", e);
+                error!(error = %e, "Failed to start hotkey listener");
                 hotkeys::print_permission_error();
                 None
             }
@@ -227,7 +245,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize font renderer with TrueType font (size from config)
     let font_renderer = font::FontRenderer::from_system_font(persistent_state.global.text_size)
         .context(format!("Failed to initialize font renderer with size {}", persistent_state.global.text_size))?;
-    info!("Font renderer initialized with size: {}", persistent_state.global.text_size);
+    info!(
+        size = persistent_state.global.text_size,
+        "Font renderer initialized"
+    );
     
     conn.damage_query_version(1, 1)
         .context("Failed to query DAMAGE extension version. Is DAMAGE extension available?")?;
@@ -264,14 +285,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Check if we should only allow hotkeys when EVE window is focused
             let should_process = if persistent_state.global.hotkey_require_eve_focus {
                 x11_utils::is_eve_window_focused(&conn, screen, &atoms)
-                    .inspect_err(|e| error!("Failed to check focused window: {}", e))
+                    .inspect_err(|e| error!(error = %e, "Failed to check focused window"))
                     .unwrap_or(false)
             } else {
                 true
             };
             
             if should_process {
-                info!("Received hotkey command: {:?}", command);
+                info!(command = ?command, "Received hotkey command");
                 let result = match command {
                     CycleCommand::Forward => cycle_state.cycle_forward(),
                     CycleCommand::Backward => cycle_state.cycle_backward(),
@@ -283,15 +304,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         &character_name
                     };
-                    info!("Activating window {} (character: '{}')", window, display_name);
+                    info!(
+                        window = window,
+                        character = %display_name,
+                        "Activating window via hotkey"
+                    );
                     if let Err(e) = activate_window(&conn, screen, &atoms, window) {
-                        error!("Failed to activate window: {}", e);
+                        error!(window = window, error = %e, "Failed to activate window");
                     }
                 } else {
-                    warn!("No window to activate from cycle state");
+                    warn!(active_windows = cycle_state.config_order().len(), "No window to activate, cycle state is empty");
                 }
             } else {
-                info!("Hotkey ignored - EVE window not focused (hotkey_require_eve_focus=true)");
+                info!(hotkey_require_eve_focus = persistent_state.global.hotkey_require_eve_focus, "Hotkey ignored, EVE window not focused (hotkey_require_eve_focus enabled)");
             }
         }
 
@@ -305,6 +330,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut session_state,
             &mut cycle_state,
             check_and_create_window
-        ).inspect_err(|err| error!("ecountered error in 'handle_event': err={err:#?}"));
+        ).inspect_err(|err| error!(error = ?err, "Event handling error"));
     }
 }
