@@ -12,6 +12,7 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as WrapperExt;
 
 use crate::config::DisplayConfig;
+use crate::constants::{mouse, positioning, x11};
 use crate::font::FontRenderer;
 use crate::types::Position;
 use crate::x11_utils::{get_pictformat, to_fixed, AppContext};
@@ -65,7 +66,10 @@ impl<'a> Thumbnail<'a> {
         
         // Use saved position OR top-left of EVE window with 20px padding
         let Position { x, y } = position.unwrap_or_else(|| {
-            Position::new(src_geom.x + 20, src_geom.y + 20)
+            Position::new(
+                src_geom.x + positioning::DEFAULT_SPAWN_OFFSET,
+                src_geom.y + positioning::DEFAULT_SPAWN_OFFSET,
+            )
         });
         info!("Creating thumbnail for '{}' at position ({}, {}) with size {}x{}", 
               character_name, x, y, width, height);
@@ -83,7 +87,7 @@ impl<'a> Thumbnail<'a> {
             WindowClass::INPUT_OUTPUT,
             ctx.screen.root_visual,
             &CreateWindowAux::new()
-            .override_redirect(1)
+            .override_redirect(x11::OVERRIDE_REDIRECT)
             .event_mask(
                 EventMask::SUBSTRUCTURE_NOTIFY
                 | EventMask::BUTTON_PRESS
@@ -138,11 +142,11 @@ impl<'a> Thumbnail<'a> {
 
         let overlay_pixmap = ctx.conn.generate_id()?;
         let overlay_picture = ctx.conn.generate_id()?;
-        ctx.conn.create_pixmap(32, overlay_pixmap, ctx.screen.root, width, height)?;
+        ctx.conn.create_pixmap(x11::ARGB_DEPTH, overlay_pixmap, ctx.screen.root, width, height)?;
         ctx.conn.render_create_picture(
             overlay_picture,
             overlay_pixmap,
-            get_pictformat(ctx.conn, 32, true)?,
+            get_pictformat(ctx.conn, x11::ARGB_DEPTH, true)?,
             &CreatePictureAux::new(),
         )?;
 
@@ -311,10 +315,9 @@ impl<'a> Thumbnail<'a> {
         
         if rendered.width > 0 && rendered.height > 0 {
             // Upload rendered text bitmap to X11
-            let depth = 32; // ARGB
             let text_pixmap = self.conn.generate_id()?;
             self.conn.create_pixmap(
-                depth,
+                x11::ARGB_DEPTH,
                 text_pixmap,
                 self.overlay_pixmap,
                 rendered.width as u16,
@@ -339,7 +342,7 @@ impl<'a> Thumbnail<'a> {
                 0,
                 0,
                 0,
-                depth,
+                x11::ARGB_DEPTH,
                 &image_data,
             )?;
             
@@ -348,7 +351,7 @@ impl<'a> Thumbnail<'a> {
             self.conn.render_create_picture(
                 text_picture,
                 text_pixmap,
-                get_pictformat(self.conn, 32, true)?,
+                get_pictformat(self.conn, x11::ARGB_DEPTH, true)?,
                 &CreatePictureAux::new(),
             )?;
             

@@ -4,6 +4,8 @@ use std::sync::mpsc::Sender;
 use std::thread;
 use tracing::{debug, error, info, warn};
 
+use crate::constants::input;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CycleCommand {
     Forward,
@@ -91,7 +93,7 @@ fn listen_for_hotkeys(mut device: Device, sender: Sender<CycleCommand>) -> Resul
             }
 
             if let InputEventKind::Key(key) = event.kind() {
-                let pressed = event.value() == 1; // 1 = press, 0 = release, 2 = repeat
+                let pressed = event.value() == input::KEY_PRESS;
 
                 match key {
                     Key::KEY_LEFTSHIFT | Key::KEY_RIGHTSHIFT => {

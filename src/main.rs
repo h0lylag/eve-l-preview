@@ -2,6 +2,7 @@
 
 mod color;
 mod config;
+mod constants;
 mod cycle_state;
 mod event_handler;
 mod font;
@@ -22,6 +23,7 @@ use x11rb::protocol::damage::ConnectionExt as DamageExt;
 use x11rb::protocol::xproto::*;
 
 use config::PersistentState;
+use constants::wine;
 use cycle_state::CycleState;
 use event_handler::handle_event;
 use hotkeys::{spawn_listener, CycleCommand};
@@ -41,11 +43,11 @@ fn check_and_create_window<'a>(
         .reply()
     {
         if !prop.value.is_empty() {
-            let pid = u32::from_ne_bytes(prop.value[0..4].try_into()?);
+            let pid = u32::from_ne_bytes(prop.value[0..constants::x11::PID_PROPERTY_SIZE].try_into()?);
             if !std::fs::read_link(format!("/proc/{pid}/exe"))
                 .map(|x| {
-                    x.to_string_lossy().contains("wine64-preloader")
-                        || x.to_string_lossy().contains("wine-preloader")
+                    x.to_string_lossy().contains(wine::WINE64_PRELOADER)
+                        || x.to_string_lossy().contains(wine::WINE_PRELOADER)
                 })
                 .inspect_err(|e| {
                     error!("cant read link '/proc/{pid}/exe' assuming its wine: err={e:?}")

@@ -6,6 +6,7 @@ use x11rb::protocol::Event::{self, CreateNotify, DamageNotify, DestroyNotify, Pr
 use x11rb::protocol::xproto::*;
 
 use crate::config::PersistentState;
+use crate::constants::mouse;
 use crate::cycle_state::CycleState;
 use crate::persistence::SavedState;
 use crate::snapping::{self, Rect};
@@ -160,11 +161,11 @@ pub fn handle_event<'a>(
                 thumbnail.input_state.drag_start = Position::new(event.root_x, event.root_y);
                 thumbnail.input_state.win_start = Position::new(geom.x, geom.y);
                 // Only allow dragging with right-click (button 3)
-                if event.detail == 3 {
+                if event.detail == mouse::BUTTON_RIGHT {
                     thumbnail.input_state.dragging = true;
                 }
                 // Left-click sets current character for cycling
-                if event.detail == 1 {
+                if event.detail == mouse::BUTTON_LEFT {
                     cycle_state.set_current(&thumbnail.character_name);
                 }
             }
@@ -176,7 +177,7 @@ pub fn handle_event<'a>(
             {
                 // Left-click focuses the window
                 // (dragging is only enabled for right-click, so left-click never drags)
-                if event.detail == 1 {
+                if event.detail == mouse::BUTTON_LEFT {
                     thumbnail.focus()?;
                 }
                 

@@ -7,6 +7,7 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as WrapperExt;
 
 use crate::config::DisplayConfig;
+use crate::constants::{eve, fixed_point, x11};
 use crate::font::FontRenderer;
 
 /// Application context holding immutable shared state
@@ -41,7 +42,7 @@ impl CachedAtoms {
 }
 
 pub fn to_fixed(v: f32) -> Fixed {
-    (v * (1 << 16) as f32).round() as Fixed
+    (v * fixed_point::MULTIPLIER).round() as Fixed
 }
 
 #[tracing::instrument]
@@ -79,9 +80,9 @@ pub fn is_window_eve(conn: &RustConnection, window: Window, atoms: &CachedAtoms)
         .get_property(false, window, atoms.wm_name, AtomEnum::STRING, 0, 1024)?
         .reply()?;
     let title = String::from_utf8_lossy(&name_prop.value).into_owned();
-    Ok(if let Some(name) = title.strip_prefix("EVE - ") {
+    Ok(if let Some(name) = title.strip_prefix(eve::WINDOW_TITLE_PREFIX) {
         Some(name.to_string())
-    } else if title == "EVE" {
+    } else if title == eve::LOGGED_OUT_TITLE {
         Some(String::new())
     } else {
         None
@@ -134,7 +135,7 @@ pub fn activate_window(
         window,
         type_: atoms.net_active_window,
         data: ClientMessageData::from([
-            2, // Source indication: 2 = pager/direct user action (stronger than 1=application)
+            x11::ACTIVE_WINDOW_SOURCE_PAGER, // Source indication: 2 = pager/direct user action
             x11rb::CURRENT_TIME, // Timestamp (current time)
             0, // Requestor's currently active window (0 = none)
             0,
