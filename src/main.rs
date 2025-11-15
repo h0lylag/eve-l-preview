@@ -29,6 +29,7 @@ use event_handler::handle_event;
 use hotkeys::{spawn_listener, CycleCommand};
 use persistence::SavedState;
 use thumbnail::Thumbnail;
+use types::Dimensions;
 use x11_utils::{activate_window, is_window_eve, AppContext, CachedAtoms};
 
 fn check_and_create_window<'a>(
@@ -104,8 +105,9 @@ fn check_and_create_window<'a>(
                 ctx.screen.height_in_pixels,
             )
         };
+        let dimensions = Dimensions::new(width, height);
         
-        let thumbnail = Thumbnail::new(ctx, character_name.clone(), window, ctx.font_renderer, position, width, height)
+        let thumbnail = Thumbnail::new(ctx, character_name.clone(), window, ctx.font_renderer, position, dimensions)
             .context(format!("Failed to create thumbnail for '{}' (window {})", character_name, window))?;
         info!("constructed Thumbnail for eve window: window={window}");
         Ok(Some(thumbnail))

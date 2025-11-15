@@ -14,7 +14,7 @@ use x11rb::wrapper::ConnectionExt as WrapperExt;
 use crate::config::DisplayConfig;
 use crate::constants::{mouse, positioning, x11};
 use crate::font::FontRenderer;
-use crate::types::Position;
+use crate::types::{Dimensions, Position};
 use crate::x11_utils::{get_pictformat, to_fixed, AppContext};
 
 #[derive(Debug, Default)]
@@ -27,8 +27,7 @@ pub struct InputState {
 #[derive(Debug)]
 pub struct Thumbnail<'a> {
     pub window: Window,
-    pub width: u16,
-    pub height: u16,
+    pub dimensions: Dimensions,
 
     config: &'a DisplayConfig,
     font_renderer: &'a FontRenderer,
@@ -59,8 +58,7 @@ impl<'a> Thumbnail<'a> {
         src: Window,
         font_renderer: &'a FontRenderer,
         position: Option<Position>,
-        width: u16,
-        height: u16,
+        dimensions: Dimensions,
     ) -> Result<Self> {
         let src_geom = ctx.conn.get_geometry(src)
             .context("Failed to send geometry query for source EVE window")?
@@ -75,7 +73,7 @@ impl<'a> Thumbnail<'a> {
             )
         });
         info!("Creating thumbnail for '{}' at position ({}, {}) with size {}x{}", 
-              character_name, x, y, width, height);
+              character_name, x, y, dimensions.width, dimensions.height);
 
         let window = ctx.conn.generate_id()
             .context("Failed to generate X11 window ID")?;
@@ -85,8 +83,8 @@ impl<'a> Thumbnail<'a> {
             ctx.screen.root,
             x,
             y,
-            width,
-            height,
+            dimensions.width,
+            dimensions.height,
             0,
             WindowClass::INPUT_OUTPUT,
             ctx.screen.root_visual,
@@ -174,7 +172,7 @@ impl<'a> Thumbnail<'a> {
             .context("Failed to generate ID for overlay pixmap")?;
         let overlay_picture = ctx.conn.generate_id()
             .context("Failed to generate ID for overlay picture")?;
-        ctx.conn.create_pixmap(x11::ARGB_DEPTH, overlay_pixmap, ctx.screen.root, width, height)
+        ctx.conn.create_pixmap(x11::ARGB_DEPTH, overlay_pixmap, ctx.screen.root, dimensions.width, dimensions.height)
             .context(format!("Failed to create overlay pixmap for '{}'", character_name))?;
         ctx.conn.render_create_picture(
             overlay_picture,
@@ -201,8 +199,7 @@ impl<'a> Thumbnail<'a> {
             .context(format!("Failed to create damage tracking for '{}' (check DAMAGE extension)", character_name))?;
 
         let mut _self = Self {
-            width,
-            height,
+            dimensions,
             window,
             config: ctx.config,
             font_renderer,
@@ -249,8 +246,8 @@ impl<'a> Thumbnail<'a> {
             .reply()
             .context(format!("Failed to get geometry for source window (character: '{}')", self.character_name))?;
         let transform = Transform {
-            matrix11: to_fixed(geom.width as f32 / self.width as f32),
-            matrix22: to_fixed(geom.height as f32 / self.height as f32),
+            matrix11: to_fixed(geom.width as f32 / self.dimensions.width as f32),
+            matrix22: to_fixed(geom.height as f32 / self.dimensions.height as f32),
             matrix33: to_fixed(1.0),
             ..Default::default()
         };
@@ -268,8 +265,8 @@ impl<'a> Thumbnail<'a> {
             0,
             0,
             0,
-            self.width,
-            self.height,
+            self.dimensions.width,
+            self.dimensions.height,
         )
         .context(format!("Failed to composite source window for '{}'", self.character_name))?;
         Ok(())
@@ -288,8 +285,8 @@ impl<'a> Thumbnail<'a> {
                 0,
                 0,
                 0,
-                self.width,
-                self.height,
+                self.dimensions.width,
+                self.dimensions.height,
             )
             .context(format!("Failed to render border for '{}'", self.character_name))?;
         } else {
@@ -304,8 +301,8 @@ impl<'a> Thumbnail<'a> {
                 0,
                 0,
                 0,
-                self.width,
-                self.height,
+                self.dimensions.width,
+                self.dimensions.height,
             )
             .context(format!("Failed to clear border for '{}'", self.character_name))?;
         }
@@ -334,8 +331,8 @@ impl<'a> Thumbnail<'a> {
         self.conn.image_text8(
             self.overlay_pixmap,
             self.overlay_gc,
-            (self.width as i16 - extents.overall_width as i16) / 2,
-            (self.height as i16 + extents.font_ascent + extents.font_descent) / 2,
+            (self.dimensions.width as i16 - extents.overall_width as i16) / 2,
+            (self.dimensions.height as i16 + extents.font_ascent + extents.font_descent) / 2,
             b"MINIMIZED",
         )
         .context(format!("Failed to render MINIMIZED text for '{}'", self.character_name))?;
@@ -358,8 +355,8 @@ impl<'a> Thumbnail<'a> {
             0,
             self.config.border_size as i16,
             self.config.border_size as i16,
-            self.width - self.config.border_size * 2,
-            self.height - self.config.border_size * 2,
+            self.dimensions.width - self.config.border_size * 2,
+            self.dimensions.height - self.config.border_size * 2,
         )
         .context(format!("Failed to clear overlay area for '{}'", self.character_name))?;
         
@@ -457,8 +454,8 @@ impl<'a> Thumbnail<'a> {
             0,
             0,
             0,
-            self.width,
-            self.height,
+            self.dimensions.width,
+            self.dimensions.height,
         )
         .context(format!("Failed to composite overlay onto destination for '{}'", self.character_name))?;
         Ok(())

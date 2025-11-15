@@ -38,6 +38,77 @@ impl From<Position> for (i16, i16) {
     }
 }
 
+/// Thumbnail dimensions (width × height)
+/// Using a newtype prevents accidentally swapping width and height
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub struct Dimensions {
+    pub width: u16,
+    pub height: u16,
+}
+
+impl Dimensions {
+    /// Create new dimensions
+    pub fn new(width: u16, height: u16) -> Self {
+        Self { width, height }
+    }
+
+    /// Calculate aspect ratio (width / height)
+    pub fn aspect_ratio(&self) -> f32 {
+        if self.height == 0 {
+            0.0
+        } else {
+            self.width as f32 / self.height as f32
+        }
+    }
+
+    /// Calculate total area in pixels
+    pub fn area(&self) -> u32 {
+        self.width as u32 * self.height as u32
+    }
+
+    /// Convert to tuple for compatibility
+    pub fn as_tuple(self) -> (u16, u16) {
+        (self.width, self.height)
+    }
+
+    /// Create from tuple
+    pub fn from_tuple(tuple: (u16, u16)) -> Self {
+        Self { width: tuple.0, height: tuple.1 }
+    }
+}
+
+impl From<(u16, u16)> for Dimensions {
+    fn from(tuple: (u16, u16)) -> Self {
+        Self::from_tuple(tuple)
+    }
+}
+
+impl From<Dimensions> for (u16, u16) {
+    fn from(dims: Dimensions) -> Self {
+        dims.as_tuple()
+    }
+}
+
+/// Text offset from border edge
+/// Using a newtype makes the coordinate context clear (not absolute window coordinates)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub struct TextOffset {
+    pub x: i16,
+    pub y: i16,
+}
+
+impl TextOffset {
+    /// Create text offset from border edge
+    pub fn from_border_edge(x: i16, y: i16) -> Self {
+        Self { x, y }
+    }
+
+    /// Create new offset (alias for from_border_edge for consistency)
+    pub fn new(x: i16, y: i16) -> Self {
+        Self { x, y }
+    }
+}
+
 /// Per-character settings: position and thumbnail dimensions
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CharacterSettings {
@@ -94,5 +165,65 @@ mod tests {
         
         let tuple: (i16, i16) = pos.into();
         assert_eq!(tuple, (100, 200));
+    }
+
+    #[test]
+    fn test_dimensions_creation() {
+        let dims = Dimensions::new(640, 480);
+        assert_eq!(dims.width, 640);
+        assert_eq!(dims.height, 480);
+    }
+
+    #[test]
+    fn test_dimensions_aspect_ratio() {
+        let dims = Dimensions::new(1920, 1080);
+        assert!((dims.aspect_ratio() - 1.777).abs() < 0.001);
+        
+        let square = Dimensions::new(100, 100);
+        assert_eq!(square.aspect_ratio(), 1.0);
+        
+        // Zero height edge case
+        let zero_height = Dimensions::new(100, 0);
+        assert_eq!(zero_height.aspect_ratio(), 0.0);
+    }
+
+    #[test]
+    fn test_dimensions_area() {
+        let dims = Dimensions::new(1920, 1080);
+        assert_eq!(dims.area(), 2_073_600);
+        
+        let small = Dimensions::new(10, 20);
+        assert_eq!(small.area(), 200);
+    }
+
+    #[test]
+    fn test_dimensions_tuple_conversion() {
+        let dims = Dimensions::new(800, 600);
+        let tuple = dims.as_tuple();
+        assert_eq!(tuple, (800, 600));
+        
+        let dims2 = Dimensions::from_tuple(tuple);
+        assert_eq!(dims, dims2);
+    }
+
+    #[test]
+    fn test_dimensions_from_trait() {
+        let dims: Dimensions = (1024, 768).into();
+        assert_eq!(dims.width, 1024);
+        assert_eq!(dims.height, 768);
+        
+        let tuple: (u16, u16) = dims.into();
+        assert_eq!(tuple, (1024, 768));
+    }
+
+    #[test]
+    fn test_text_offset_creation() {
+        let offset = TextOffset::from_border_edge(10, 20);
+        assert_eq!(offset.x, 10);
+        assert_eq!(offset.y, 20);
+        
+        let offset2 = TextOffset::new(15, 25);
+        assert_eq!(offset2.x, 15);
+        assert_eq!(offset2.y, 25);
     }
 }

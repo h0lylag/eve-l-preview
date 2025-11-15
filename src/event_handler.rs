@@ -110,8 +110,8 @@ pub fn handle_event<'a>(
                     &old_name,
                     &new_character_name,
                     current_pos,
-                    thumbnail.width,
-                    thumbnail.height,
+                    thumbnail.dimensions.width,
+                    thumbnail.dimensions.height,
                 )
                 .context(format!("Failed to handle character change from '{}' to '{}'", old_name, new_character_name))?;
                 
@@ -218,8 +218,8 @@ pub fn handle_event<'a>(
                         &thumbnail.character_name,
                         geom.x,
                         geom.y,
-                        thumbnail.width,
-                        thumbnail.height,
+                        thumbnail.dimensions.width,
+                        thumbnail.dimensions.height,
                     )
                     .context(format!("Failed to save position for '{}' after drag", thumbnail.character_name))?;
                 }
@@ -238,8 +238,8 @@ pub fn handle_event<'a>(
                         .map(|geom| (*win, Rect {
                             x: geom.x,
                             y: geom.y,
-                            width: t.width,
-                            height: t.height,
+                            width: t.dimensions.width,
+                            height: t.dimensions.height,
                         }))
                 })
                 .collect();
@@ -252,8 +252,8 @@ pub fn handle_event<'a>(
                     thumbnail,
                     &event,
                     &others,
-                    thumbnail.width,
-                    thumbnail.height,
+                    thumbnail.dimensions.width,
+                    thumbnail.dimensions.height,
                     snap_threshold,
                 )
                 .context(format!("Failed to handle drag motion for '{}'", thumbnail.character_name))?;
