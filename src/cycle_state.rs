@@ -34,10 +34,8 @@ impl CycleState {
         self.active_windows
             .insert(character_name.clone(), window);
 
-        // Add to config order if not present (auto-discovery)
-        if !self.config_order.contains(&character_name) {
-            self.config_order.push(character_name);
-        }
+        // DO NOT auto-add to config order - only configured characters can be cycled
+        // Characters not in hotkey_order config will be ignored for Tab/Shift+Tab
     }
 
     /// Remove window (called from DestroyNotify)
@@ -74,15 +72,16 @@ impl CycleState {
     }
 
     /// Move to next character in config order (Tab)
-    /// Returns window to activate, or None if no active characters
-    pub fn cycle_forward(&mut self) -> Option<Window> {
+    /// Returns (window, character_name) to activate, or None if no active characters
+    /// Only cycles through characters in the configured hotkey_order list
+    pub fn cycle_forward(&mut self) -> Option<(Window, String)> {
         if self.active_windows.is_empty() {
             warn!("No active windows to cycle");
             return None;
         }
 
         if self.config_order.is_empty() {
-            warn!("Config order is empty");
+            warn!("Config order is empty - add character names to hotkey_order in config");
             return None;
         }
 
@@ -90,35 +89,35 @@ impl CycleState {
         loop {
             self.current_index = (self.current_index + 1) % self.config_order.len();
 
-            // Found an active character
-            if let Some(&window) = self
-                .active_windows
-                .get(&self.config_order[self.current_index])
-            {
+            // Found an active character that's in the config order
+            let character_name = &self.config_order[self.current_index];
+            if let Some(&window) = self.active_windows.get(character_name) {
                 debug!(
                     "Cycling forward to '{}' (index {})",
-                    self.config_order[self.current_index], self.current_index
+                    character_name, self.current_index
                 );
-                return Some(window);
+                return Some((window, character_name.clone()));
             }
 
             // Wrapped around without finding active character
             if self.current_index == start_index {
-                warn!("No active characters found in config order");
+                warn!("No active characters found in config order (configured characters may not be running)");
                 return None;
             }
         }
     }
 
     /// Move to previous character in config order (Shift+Tab)
-    pub fn cycle_backward(&mut self) -> Option<Window> {
+    /// Returns (window, character_name) to activate, or None if no active characters
+    /// Only cycles through characters in the configured hotkey_order list
+    pub fn cycle_backward(&mut self) -> Option<(Window, String)> {
         if self.active_windows.is_empty() {
             warn!("No active windows to cycle");
             return None;
         }
 
         if self.config_order.is_empty() {
-            warn!("Config order is empty");
+            warn!("Config order is empty - add character names to hotkey_order in config");
             return None;
         }
 
@@ -130,21 +129,19 @@ impl CycleState {
                 self.current_index - 1
             };
 
-            // Found an active character
-            if let Some(&window) = self
-                .active_windows
-                .get(&self.config_order[self.current_index])
-            {
+            // Found an active character that's in the config order
+            let character_name = &self.config_order[self.current_index];
+            if let Some(&window) = self.active_windows.get(character_name) {
                 debug!(
                     "Cycling backward to '{}' (index {})",
-                    self.config_order[self.current_index], self.current_index
+                    character_name, self.current_index
                 );
-                return Some(window);
+                return Some((window, character_name.clone()));
             }
 
             // Wrapped around without finding active character
             if self.current_index == start_index {
-                warn!("No active characters found in config order");
+                warn!("No active characters found in config order (configured characters may not be running)");
                 return None;
             }
         }
@@ -196,9 +193,9 @@ mod tests {
         state.add_window("Char3".to_string(), 300);
 
         // Start at index 0 (Char1)
-        assert_eq!(state.cycle_forward(), Some(200)); // → Char2
-        assert_eq!(state.cycle_forward(), Some(300)); // → Char3
-        assert_eq!(state.cycle_forward(), Some(100)); // → Char1 (wrap)
+        assert_eq!(state.cycle_forward(), Some((200, "Char2".to_string()))); // → Char2
+        assert_eq!(state.cycle_forward(), Some((300, "Char3".to_string()))); // → Char3
+        assert_eq!(state.cycle_forward(), Some((100, "Char1".to_string()))); // → Char1 (wrap)
     }
 
     #[test]
@@ -214,9 +211,9 @@ mod tests {
         state.add_window("Char3".to_string(), 300);
 
         // Start at index 0 (Char1)
-        assert_eq!(state.cycle_backward(), Some(300)); // ← Char3 (wrap)
-        assert_eq!(state.cycle_backward(), Some(200)); // ← Char2
-        assert_eq!(state.cycle_backward(), Some(100)); // ← Char1
+        assert_eq!(state.cycle_backward(), Some((300, "Char3".to_string()))); // ← Char3 (wrap)
+        assert_eq!(state.cycle_backward(), Some((200, "Char2".to_string()))); // ← Char2
+        assert_eq!(state.cycle_backward(), Some((100, "Char1".to_string()))); // ← Char1
     }
 
     #[test]
@@ -227,7 +224,7 @@ mod tests {
         state.add_window("Char2".to_string(), 200);
 
         assert!(state.set_current("Char2"));
-        assert_eq!(state.cycle_forward(), Some(100)); // Next after Char2 is Char1
+        assert_eq!(state.cycle_forward(), Some((100, "Char1".to_string()))); // Next after Char2 is Char1
     }
 
     #[test]
@@ -243,8 +240,8 @@ mod tests {
         // "Inactive" not added
 
         // Should skip "Inactive" in cycle
-        assert_eq!(state.cycle_forward(), Some(300)); // Active1 → Active2
-        assert_eq!(state.cycle_forward(), Some(100)); // Active2 → Active1 (wrap, skip Inactive)
+        assert_eq!(state.cycle_forward(), Some((300, "Active2".to_string()))); // Active1 → Active2
+        assert_eq!(state.cycle_forward(), Some((100, "Active1".to_string()))); // Active2 → Active1 (wrap, skip Inactive)
     }
 
     #[test]
@@ -258,7 +255,7 @@ mod tests {
         state.remove_window(200); // Remove current character
 
         // Index should be clamped and cycle should still work
-        assert_eq!(state.cycle_forward(), Some(100));
+        assert_eq!(state.cycle_forward(), Some((100, "Char1".to_string())));
     }
 
     #[test]
@@ -269,15 +266,20 @@ mod tests {
     }
 
     #[test]
-    fn test_auto_add_new_character() {
+    fn test_auto_add_disabled() {
+        // Characters NOT in config order should not be auto-added or cycled
         let mut state = CycleState::new(vec!["Char1".to_string()]);
 
         state.add_window("Char1".to_string(), 100);
-        state.add_window("NewChar".to_string(), 200);
+        state.add_window("NewChar".to_string(), 200); // Not in config_order
 
-        // NewChar should be auto-added to config order
-        assert_eq!(state.config_order.len(), 2);
-        assert!(state.config_order.contains(&"NewChar".to_string()));
+        // NewChar should NOT be added to config order
+        assert_eq!(state.config_order.len(), 1);
+        assert!(!state.config_order.contains(&"NewChar".to_string()));
+        
+        // Cycling should skip NewChar
+        assert_eq!(state.cycle_forward(), Some((100, "Char1".to_string())));
+        assert_eq!(state.cycle_forward(), Some((100, "Char1".to_string()))); // Still Char1
     }
 
     #[test]

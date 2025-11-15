@@ -228,13 +228,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Check for hotkey commands (non-blocking)
         if let Ok(command) = hotkey_rx.try_recv() {
             info!("Received hotkey command: {:?}", command);
-            let window = match command {
+            let result = match command {
                 CycleCommand::Forward => cycle_state.cycle_forward(),
                 CycleCommand::Backward => cycle_state.cycle_backward(),
             };
 
-            if let Some(window) = window {
-                info!("Activating window: {}", window);
+            if let Some((window, character_name)) = result {
+                let display_name = if character_name.is_empty() {
+                    "login_screen"
+                } else {
+                    &character_name
+                };
+                info!("Activating window {} (character: '{}')", window, display_name);
                 if let Err(e) = activate_window(&conn, screen, &atoms, window) {
                     error!("Failed to activate window: {}", e);
                 }
