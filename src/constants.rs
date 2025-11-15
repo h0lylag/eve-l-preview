@@ -137,3 +137,24 @@ pub mod env {
     /// Environment variable for custom font path (set at build time)
     pub const FONT_PATH: &str = "FONT_PATH";
 }
+
+/// Configuration validation limits
+pub mod validation {
+    /// Maximum allowed border size in pixels
+    pub const MAX_BORDER_SIZE: u16 = 100;
+    
+    /// Minimum text size in pixels
+    pub const MIN_TEXT_SIZE: f32 = 1.0;
+    
+    /// Maximum text size in pixels
+    pub const MAX_TEXT_SIZE: f32 = 200.0;
+    
+    /// Minimum dimension (width or height) in pixels
+    pub const MIN_DIMENSION: u16 = 1;
+    
+    /// Maximum dimension (width or height) in pixels
+    pub const MAX_DIMENSION: u16 = 4096;
+    
+    /// Maximum snap threshold in pixels
+    pub const MAX_SNAP_THRESHOLD: u16 = 1000;
+}

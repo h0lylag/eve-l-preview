@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use x11rb::protocol::render::Color;
 
 use crate::color::{HexColor, Opacity};
@@ -166,6 +166,85 @@ impl PersistentState {
         self.save()
     }
 
+    /// Validate and clamp config values to safe ranges
+    /// Called after loading TOML or creating from env vars
+    fn validate_and_clamp(&mut self) {
+        use crate::constants::validation::*;
+        
+        // Opacity already limited by u8 type (0-255), but clamp to 0-100 for percentage
+        if self.global.opacity_percent > 100 {
+            warn!("opacity_percent {} exceeds 100, clamping to 100", self.global.opacity_percent);
+            self.global.opacity_percent = 100;
+        }
+        
+        // Border size should be reasonable (0-100 pixels)
+        if self.global.border_size > MAX_BORDER_SIZE {
+            warn!("border_size {} exceeds {}, clamping", self.global.border_size, MAX_BORDER_SIZE);
+            self.global.border_size = MAX_BORDER_SIZE;
+        }
+        
+        // Text size should be reasonable (1.0-200.0 pixels)
+        if self.global.text_size < MIN_TEXT_SIZE {
+            warn!("text_size {} below minimum {}, clamping", self.global.text_size, MIN_TEXT_SIZE);
+            self.global.text_size = MIN_TEXT_SIZE;
+        } else if self.global.text_size > MAX_TEXT_SIZE {
+            warn!("text_size {} exceeds maximum {}, clamping", self.global.text_size, MAX_TEXT_SIZE);
+            self.global.text_size = MAX_TEXT_SIZE;
+        }
+        
+        // Default dimensions should be non-zero (1-4096 pixels)
+        if self.global.default_width < MIN_DIMENSION {
+            warn!("default_width {} below minimum {}, using {}", self.global.default_width, MIN_DIMENSION, default_width());
+            self.global.default_width = default_width();
+        } else if self.global.default_width > MAX_DIMENSION {
+            warn!("default_width {} exceeds maximum {}, clamping", self.global.default_width, MAX_DIMENSION);
+            self.global.default_width = MAX_DIMENSION;
+        }
+        
+        if self.global.default_height < MIN_DIMENSION {
+            warn!("default_height {} below minimum {}, using {}", self.global.default_height, MIN_DIMENSION, default_height());
+            self.global.default_height = default_height();
+        } else if self.global.default_height > MAX_DIMENSION {
+            warn!("default_height {} exceeds maximum {}, clamping", self.global.default_height, MAX_DIMENSION);
+            self.global.default_height = MAX_DIMENSION;
+        }
+        
+        // Snap threshold should be reasonable (0-1000 pixels, 0 = disabled)
+        if self.global.snap_threshold > MAX_SNAP_THRESHOLD {
+            warn!("snap_threshold {} exceeds {}, clamping", self.global.snap_threshold, MAX_SNAP_THRESHOLD);
+            self.global.snap_threshold = MAX_SNAP_THRESHOLD;
+        }
+        
+        // Validate per-character dimensions
+        for (character, settings) in &mut self.character_positions {
+            let mut changed = false;
+            
+            if settings.dimensions.width > 0 && settings.dimensions.width < MIN_DIMENSION {
+                warn!("Character '{}' width {} below minimum, using {}", character, settings.dimensions.width, self.global.default_width);
+                settings.dimensions.width = self.global.default_width;
+                changed = true;
+            } else if settings.dimensions.width > MAX_DIMENSION {
+                warn!("Character '{}' width {} exceeds maximum, clamping", character, settings.dimensions.width);
+                settings.dimensions.width = MAX_DIMENSION;
+                changed = true;
+            }
+            
+            if settings.dimensions.height > 0 && settings.dimensions.height < MIN_DIMENSION {
+                warn!("Character '{}' height {} below minimum, using {}", character, settings.dimensions.height, self.global.default_height);
+                settings.dimensions.height = self.global.default_height;
+                changed = true;
+            } else if settings.dimensions.height > MAX_DIMENSION {
+                warn!("Character '{}' height {} exceeds maximum, clamping", character, settings.dimensions.height);
+                settings.dimensions.height = MAX_DIMENSION;
+                changed = true;
+            }
+            
+            if changed {
+                info!("Corrected dimensions for character '{}': {}x{}", character, settings.dimensions.width, settings.dimensions.height);
+            }
+        }
+    }
+
     /// Build DisplayConfig from current settings
     /// Returns a new DisplayConfig that can be used independently
     /// Note: Per-character dimensions are not included here - they're in CharacterSettings
@@ -208,6 +287,9 @@ impl PersistentState {
                     // Apply env var overrides
                     state.apply_env_overrides();
                     
+                    // Validate and clamp all values to safe ranges
+                    state.validate_and_clamp();
+                    
                     // Auto-save if config is missing new fields (e.g., default_width/default_height)
                     // This ensures existing configs get updated with new options
                     if !contents.contains("default_width") || !contents.contains("default_height") {
@@ -231,7 +313,10 @@ impl PersistentState {
         }
 
         // Generate new config from env vars (with fallback defaults)
-        let state = Self::from_env(None);
+        let mut state = Self::from_env(None);
+        
+        // Validate and clamp all values to safe ranges
+        state.validate_and_clamp();
         
         // Save for next time
         if let Err(e) = state.save()

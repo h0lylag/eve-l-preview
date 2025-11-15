@@ -16,7 +16,8 @@ impl Rect {
     }
     
     pub fn right(&self) -> i16 {
-        self.x + self.width as i16
+        // Use saturating_add to prevent overflow when x + width > i16::MAX
+        self.x.saturating_add(self.width as i16)
     }
     
     pub fn top(&self) -> i16 {
@@ -24,7 +25,8 @@ impl Rect {
     }
     
     pub fn bottom(&self) -> i16 {
-        self.y + self.height as i16
+        // Use saturating_add to prevent overflow when y + height > i16::MAX
+        self.y.saturating_add(self.height as i16)
     }
 }
 

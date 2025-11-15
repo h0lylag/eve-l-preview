@@ -234,6 +234,14 @@ impl<'a> Thumbnail<'a> {
         position: Option<Position>,
         dimensions: Dimensions,
     ) -> Result<Self> {
+        // Validate dimensions are non-zero
+        if dimensions.width == 0 || dimensions.height == 0 {
+            return Err(anyhow::anyhow!(
+                "Invalid thumbnail dimensions for '{}': {}x{} (must be non-zero)",
+                character_name, dimensions.width, dimensions.height
+            ));
+        }
+        
         // Query source window geometry
         let src_geom = ctx.conn.get_geometry(src)
             .context("Failed to send geometry query for source EVE window")?
