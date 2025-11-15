@@ -4,7 +4,6 @@ use x11rb::connection::Connection;
 use x11rb::protocol::render::{ConnectionExt as RenderExt, Fixed, Pictformat};
 use x11rb::protocol::xproto::*;
 use x11rb::rust_connection::RustConnection;
-use x11rb::wrapper::ConnectionExt as WrapperExt;
 
 use crate::config::DisplayConfig;
 use crate::constants::{eve, fixed_point, x11};

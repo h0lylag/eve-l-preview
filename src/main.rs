@@ -29,7 +29,7 @@ use event_handler::handle_event;
 use hotkeys::{spawn_listener, CycleCommand};
 use persistence::SavedState;
 use thumbnail::Thumbnail;
-use types::{Dimensions, EveWindowType};
+use types::Dimensions;
 use x11_utils::{activate_window, is_window_eve, AppContext, CachedAtoms};
 
 fn check_and_create_window<'a>(

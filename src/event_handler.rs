@@ -12,8 +12,208 @@ use crate::persistence::SavedState;
 use crate::snapping::{self, Rect};
 use crate::thumbnail::Thumbnail;
 use crate::types::Position;
-use crate::types::EveWindowType;
 use crate::x11_utils::{is_window_eve, AppContext};
+
+/// Handle DamageNotify events - update damaged thumbnail
+fn handle_damage_notify(ctx: &AppContext, eves: &HashMap<Window, Thumbnail>, event: x11rb::protocol::damage::NotifyEvent) -> Result<()> {
+    if let Some(thumbnail) = eves
+        .values()
+        .find(|thumbnail| thumbnail.damage == event.damage)
+    {
+        thumbnail.update()
+            .context(format!("Failed to update thumbnail for damage event (damage={})", event.damage))?;
+        ctx.conn.damage_subtract(event.damage, 0u32, 0u32)
+            .context(format!("Failed to subtract damage region (damage={})", event.damage))?;
+        ctx.conn.flush()
+            .context("Failed to flush X11 connection after damage update")?;
+    }
+    Ok(())
+}
+
+/// Handle CreateNotify events - create thumbnail for new EVE window
+fn handle_create_notify<'a>(
+    ctx: &AppContext<'a>,
+    persistent_state: &PersistentState,
+    eves: &mut HashMap<Window, Thumbnail<'a>>,
+    event: CreateNotifyEvent,
+    session_state: &SavedState,
+    cycle_state: &mut CycleState,
+    check_and_create_window: &impl Fn(&AppContext<'a>, &PersistentState, Window, &SavedState) -> Result<Option<Thumbnail<'a>>>,
+) -> Result<()> {
+    if let Some(thumbnail) = check_and_create_window(ctx, persistent_state, event.window, session_state)
+        .context(format!("Failed to check/create window for new window {}", event.window))? {
+        // Register with cycle state
+        cycle_state.add_window(thumbnail.character_name.clone(), event.window);
+        eves.insert(event.window, thumbnail);
+    }
+    Ok(())
+}
+
+/// Handle DestroyNotify events - remove destroyed window
+fn handle_destroy_notify(
+    eves: &mut HashMap<Window, Thumbnail>,
+    event: DestroyNotifyEvent,
+    cycle_state: &mut CycleState,
+) -> Result<()> {
+    cycle_state.remove_window(event.window);
+    eves.remove(&event.window);
+    Ok(())
+}
+
+/// Handle FocusIn events - update focused state and visibility
+fn handle_focus_in(
+    ctx: &AppContext,
+    eves: &mut HashMap<Window, Thumbnail>,
+    event: FocusInEvent,
+) -> Result<()> {
+    if let Some(thumbnail) = eves.get_mut(&event.event) {
+        thumbnail.minimized = false;
+        thumbnail.focused = true;
+        thumbnail.border(true)
+            .context(format!("Failed to update border on focus for '{}'", thumbnail.character_name))?;
+        if ctx.config.hide_when_no_focus && eves.values().any(|x| !x.visible) {
+            for thumbnail in eves.values_mut() {
+                thumbnail.visibility(true)
+                    .context(format!("Failed to show thumbnail '{}' on focus", thumbnail.character_name))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Handle FocusOut events - update focused state and visibility  
+fn handle_focus_out(
+    ctx: &AppContext,
+    eves: &mut HashMap<Window, Thumbnail>,
+    event: FocusOutEvent,
+) -> Result<()> {
+    if let Some(thumbnail) = eves.get_mut(&event.event) {
+        thumbnail.focused = false;
+        thumbnail.border(false)
+            .context(format!("Failed to clear border on focus loss for '{}'", thumbnail.character_name))?;
+        if ctx.config.hide_when_no_focus && eves.values().all(|x| !x.focused && !x.minimized) {
+            for thumbnail in eves.values_mut() {
+                thumbnail.visibility(false)
+                    .context(format!("Failed to hide thumbnail '{}' on focus loss", thumbnail.character_name))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Handle ButtonPress events - start dragging or set current character
+fn handle_button_press(
+    ctx: &AppContext,
+    eves: &mut HashMap<Window, Thumbnail>,
+    event: ButtonPressEvent,
+    cycle_state: &mut CycleState,
+) -> Result<()> {
+    if let Some((_, thumbnail)) = eves
+        .iter_mut()
+        .find(|(_, thumb)| thumb.is_hovered(event.root_x, event.root_y) && thumb.visible)
+    {
+        let geom = ctx.conn.get_geometry(thumbnail.window)
+            .context("Failed to send geometry query on button press")?
+            .reply()
+            .context(format!("Failed to get geometry on button press for '{}'", thumbnail.character_name))?;
+        thumbnail.input_state.drag_start = Position::new(event.root_x, event.root_y);
+        thumbnail.input_state.win_start = Position::new(geom.x, geom.y);
+        // Only allow dragging with right-click
+        if event.detail == mouse::BUTTON_RIGHT {
+            thumbnail.input_state.dragging = true;
+        }
+        // Left-click sets current character for cycling
+        if event.detail == mouse::BUTTON_LEFT {
+            cycle_state.set_current(&thumbnail.character_name);
+        }
+    }
+    Ok(())
+}
+
+/// Handle ButtonRelease events - focus window and save position after drag
+fn handle_button_release(
+    ctx: &AppContext,
+    persistent_state: &mut PersistentState,
+    eves: &mut HashMap<Window, Thumbnail>,
+    event: ButtonReleaseEvent,
+    session_state: &mut SavedState,
+) -> Result<()> {
+    if let Some((_, thumbnail)) = eves
+        .iter_mut()
+        .find(|(_, thumb)| thumb.is_hovered(event.root_x, event.root_y))
+    {
+        // Left-click focuses the window
+        // (dragging is only enabled for right-click, so left-click never drags)
+        if event.detail == mouse::BUTTON_LEFT {
+            thumbnail.focus()
+                .context(format!("Failed to focus window for '{}'", thumbnail.character_name))?;
+        }
+        
+        // Save position after drag ends (right-click release)
+        if thumbnail.input_state.dragging {
+            // Query actual position from X11
+            let geom = ctx.conn.get_geometry(thumbnail.window)
+                .context("Failed to send geometry query after drag")?
+                .reply()
+                .context(format!("Failed to get geometry after drag for '{}'", thumbnail.character_name))?;
+            
+            // Update session state
+            session_state.update_window_position(thumbnail.window, geom.x, geom.y);
+            // Persist character position AND dimensions
+            persistent_state.update_position(
+                &thumbnail.character_name,
+                geom.x,
+                geom.y,
+                thumbnail.dimensions.width,
+                thumbnail.dimensions.height,
+            )
+            .context(format!("Failed to save position for '{}' after drag", thumbnail.character_name))?;
+        }
+        
+        thumbnail.input_state.dragging = false;
+    }
+    Ok(())
+}
+
+/// Handle MotionNotify events - process drag motion with snapping
+fn handle_motion_notify(
+    ctx: &AppContext,
+    persistent_state: &PersistentState,
+    eves: &mut HashMap<Window, Thumbnail>,
+    event: MotionNotifyEvent,
+) -> Result<()> {
+    // Build list of other thumbnails for snapping (query actual positions)
+    let others: Vec<_> = eves
+        .iter()
+        .filter(|(_, t)| !t.input_state.dragging && t.visible)
+        .filter_map(|(win, t)| {
+            ctx.conn.get_geometry(t.window).ok()
+                .and_then(|req| req.reply().ok())
+                .map(|geom| (*win, Rect {
+                    x: geom.x,
+                    y: geom.y,
+                    width: t.dimensions.width,
+                    height: t.dimensions.height,
+                }))
+        })
+        .collect();
+    
+    let snap_threshold = persistent_state.global.snap_threshold;
+    
+    // Handle drag for all thumbnails (mutable pass)
+    for thumbnail in eves.values_mut() {
+        handle_drag_motion(
+            thumbnail,
+            &event,
+            &others,
+            thumbnail.dimensions.width,
+            thumbnail.dimensions.height,
+            snap_threshold,
+        )
+        .context(format!("Failed to handle drag motion for '{}'", thumbnail.character_name))?;
+    }
+    Ok(())
+}
 
 /// Handle drag motion for a single thumbnail with snapping
 fn handle_drag_motion(
@@ -62,31 +262,14 @@ pub fn handle_event<'a>(
     check_and_create_window: impl Fn(&AppContext<'a>, &PersistentState, Window, &SavedState) -> Result<Option<Thumbnail<'a>>>,
 ) -> Result<()> {
     match event {
-        DamageNotify(event) => {
-            if let Some(thumbnail) = eves
-                .values()
-                .find(|thumbnail| thumbnail.damage == event.damage)
-            {
-                thumbnail.update()
-                    .context(format!("Failed to update thumbnail for damage event (damage={})", event.damage))?;
-                ctx.conn.damage_subtract(event.damage, 0u32, 0u32)
-                    .context(format!("Failed to subtract damage region (damage={})", event.damage))?;
-                ctx.conn.flush()
-                    .context("Failed to flush X11 connection after damage update")?;
-            }
-        }
-        CreateNotify(event) => {
-            if let Some(thumbnail) = check_and_create_window(ctx, persistent_state, event.window, session_state)
-                .context(format!("Failed to check/create window for new window {}", event.window))? {
-                // Register with cycle state
-                cycle_state.add_window(thumbnail.character_name.clone(), event.window);
-                eves.insert(event.window, thumbnail);
-            }
-        }
-        DestroyNotify(event) => {
-            cycle_state.remove_window(event.window);
-            eves.remove(&event.window);
-        }
+        DamageNotify(event) => handle_damage_notify(ctx, eves, event),
+        CreateNotify(event) => handle_create_notify(ctx, persistent_state, eves, event, session_state, cycle_state, &check_and_create_window),
+        DestroyNotify(event) => handle_destroy_notify(eves, event, cycle_state),
+        Event::FocusIn(event) => handle_focus_in(ctx, eves, event),
+        Event::FocusOut(event) => handle_focus_out(ctx, eves, event),
+        Event::ButtonPress(event) => handle_button_press(ctx, eves, event, cycle_state),
+        Event::ButtonRelease(event) => handle_button_release(ctx, persistent_state, eves, event, session_state),
+        Event::MotionNotify(event) => handle_motion_notify(ctx, persistent_state, eves, event),
         PropertyNotify(event) => {
             if event.atom == ctx.atoms.wm_name
                 && let Some(thumbnail) = eves.get_mut(&event.window)
@@ -144,124 +327,8 @@ pub fn handle_event<'a>(
                 thumbnail.minimized()
                     .context(format!("Failed to set minimized state for '{}'", thumbnail.character_name))?;
             }
+            Ok(())
         }
-        Event::FocusIn(event) => {
-            if let Some(thumbnail) = eves.get_mut(&event.event) {
-                thumbnail.minimized = false;
-                thumbnail.focused = true;
-                thumbnail.border(true)
-                    .context(format!("Failed to update border on focus for '{}'", thumbnail.character_name))?;
-                if ctx.config.hide_when_no_focus && eves.values().any(|x| !x.visible) {
-                    for thumbnail in eves.values_mut() {
-                        thumbnail.visibility(true)
-                            .context(format!("Failed to show thumbnail '{}' on focus", thumbnail.character_name))?;
-                    }
-                }
-            }
-        }
-        Event::FocusOut(event) => {
-            if let Some(thumbnail) = eves.get_mut(&event.event) {
-                thumbnail.focused = false;
-                thumbnail.border(false)
-                    .context(format!("Failed to clear border on focus loss for '{}'", thumbnail.character_name))?;
-                if ctx.config.hide_when_no_focus && eves.values().all(|x| !x.focused && !x.minimized) {
-                    for thumbnail in eves.values_mut() {
-                        thumbnail.visibility(false)
-                            .context(format!("Failed to hide thumbnail '{}' on focus loss", thumbnail.character_name))?;
-                    }
-                }
-            }
-        }
-        Event::ButtonPress(event) => {
-            if let Some((_, thumbnail)) = eves
-                .iter_mut()
-                .find(|(_, thumb)| thumb.is_hovered(event.root_x, event.root_y) && thumb.visible)
-            {
-                let geom = ctx.conn.get_geometry(thumbnail.window)
-                    .context("Failed to send geometry query on button press")?
-                    .reply()
-                    .context(format!("Failed to get geometry on button press for '{}'", thumbnail.character_name))?;
-                thumbnail.input_state.drag_start = Position::new(event.root_x, event.root_y);
-                thumbnail.input_state.win_start = Position::new(geom.x, geom.y);
-                // Only allow dragging with right-click
-                if event.detail == mouse::BUTTON_RIGHT {
-                    thumbnail.input_state.dragging = true;
-                }
-                // Left-click sets current character for cycling
-                if event.detail == mouse::BUTTON_LEFT {
-                    cycle_state.set_current(&thumbnail.character_name);
-                }
-            }
-        }
-        Event::ButtonRelease(event) => {
-            if let Some((_, thumbnail)) = eves
-                .iter_mut()
-                .find(|(_, thumb)| thumb.is_hovered(event.root_x, event.root_y))
-            {
-                // Left-click focuses the window
-                // (dragging is only enabled for right-click, so left-click never drags)
-                if event.detail == mouse::BUTTON_LEFT {
-                    thumbnail.focus()
-                        .context(format!("Failed to focus window for '{}'", thumbnail.character_name))?;
-                }
-                
-                // Save position after drag ends (right-click release)
-                if thumbnail.input_state.dragging {
-                    // Query actual position from X11
-                    let geom = ctx.conn.get_geometry(thumbnail.window)
-                        .context("Failed to send geometry query after drag")?
-                        .reply()
-                        .context(format!("Failed to get geometry after drag for '{}'", thumbnail.character_name))?;
-                    
-                    // Update session state
-                    session_state.update_window_position(thumbnail.window, geom.x, geom.y);
-                    // Persist character position AND dimensions
-                    persistent_state.update_position(
-                        &thumbnail.character_name,
-                        geom.x,
-                        geom.y,
-                        thumbnail.dimensions.width,
-                        thumbnail.dimensions.height,
-                    )
-                    .context(format!("Failed to save position for '{}' after drag", thumbnail.character_name))?;
-                }
-                
-                thumbnail.input_state.dragging = false;
-            }
-        }
-        Event::MotionNotify(event) => {
-            // Build list of other thumbnails for snapping (query actual positions)
-            let others: Vec<_> = eves
-                .iter()
-                .filter(|(_, t)| !t.input_state.dragging && t.visible)
-                .filter_map(|(win, t)| {
-                    ctx.conn.get_geometry(t.window).ok()
-                        .and_then(|req| req.reply().ok())
-                        .map(|geom| (*win, Rect {
-                            x: geom.x,
-                            y: geom.y,
-                            width: t.dimensions.width,
-                            height: t.dimensions.height,
-                        }))
-                })
-                .collect();
-            
-            let snap_threshold = persistent_state.global.snap_threshold;
-            
-            // Handle drag for all thumbnails (mutable pass)
-            for thumbnail in eves.values_mut() {
-                handle_drag_motion(
-                    thumbnail,
-                    &event,
-                    &others,
-                    thumbnail.dimensions.width,
-                    thumbnail.dimensions.height,
-                    snap_threshold,
-                )
-                .context(format!("Failed to handle drag motion for '{}'", thumbnail.character_name))?;
-            }
-        }
-        _ => (),
+        _ => Ok(()),
     }
-    Ok(())
 }

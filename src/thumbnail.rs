@@ -52,29 +52,14 @@ pub struct Thumbnail<'a> {
 }
 
 impl<'a> Thumbnail<'a> {
-    pub fn new(
-        ctx: &AppContext<'a>,
-        character_name: String,
-        src: Window,
-        font_renderer: &'a FontRenderer,
-        position: Option<Position>,
+    /// Create and configure the X11 window
+    fn create_window(
+        ctx: &AppContext,
+        character_name: &str,
+        x: i16,
+        y: i16,
         dimensions: Dimensions,
-    ) -> Result<Self> {
-        let src_geom = ctx.conn.get_geometry(src)
-            .context("Failed to send geometry query for source EVE window")?
-            .reply()
-            .context(format!("Failed to get geometry for source window {} (character: '{}')", src, character_name))?;
-        
-        // Use saved position OR top-left of EVE window with 20px padding
-        let Position { x, y } = position.unwrap_or_else(|| {
-            Position::new(
-                src_geom.x + positioning::DEFAULT_SPAWN_OFFSET,
-                src_geom.y + positioning::DEFAULT_SPAWN_OFFSET,
-            )
-        });
-        info!("Creating thumbnail for '{}' at position ({}, {}) with size {}x{}", 
-              character_name, x, y, dimensions.width, dimensions.height);
-
+    ) -> Result<Window> {
         let window = ctx.conn.generate_id()
             .context("Failed to generate X11 window ID")?;
         ctx.conn.create_window(
@@ -98,13 +83,23 @@ impl<'a> Thumbnail<'a> {
             ),
         )
         .context(format!("Failed to create thumbnail window for '{}'", character_name))?;
+        
+        Ok(window)
+    }
 
+    /// Setup window properties (opacity, WM_CLASS, always-on-top)
+    fn setup_window_properties(
+        ctx: &AppContext,
+        window: Window,
+        character_name: &str,
+    ) -> Result<()> {
+        // Set opacity
         let opacity_atom = ctx.conn
-        .intern_atom(false, b"_NET_WM_WINDOW_OPACITY")
-        .context("Failed to intern _NET_WM_WINDOW_OPACITY atom")?
-        .reply()
-        .context("Failed to get reply for _NET_WM_WINDOW_OPACITY atom")?
-        .atom;
+            .intern_atom(false, b"_NET_WM_WINDOW_OPACITY")
+            .context("Failed to intern _NET_WM_WINDOW_OPACITY atom")?
+            .reply()
+            .context("Failed to get reply for _NET_WM_WINDOW_OPACITY atom")?
+            .atom;
         ctx.conn.change_property32(
             PropMode::REPLACE,
             window,
@@ -114,6 +109,7 @@ impl<'a> Thumbnail<'a> {
         )
         .context(format!("Failed to set window opacity for '{}'", character_name))?;
 
+        // Set WM_CLASS
         let wm_class = ctx.conn.intern_atom(false, b"WM_CLASS")
             .context("Failed to intern WM_CLASS atom")?
             .reply()
@@ -128,6 +124,7 @@ impl<'a> Thumbnail<'a> {
         )
         .context(format!("Failed to set WM_CLASS for '{}'", character_name))?;
 
+        // Set always-on-top
         let net_wm_state = ctx.conn.intern_atom(false, b"_NET_WM_STATE")
             .context("Failed to intern _NET_WM_STATE atom")?
             .reply()
@@ -147,16 +144,30 @@ impl<'a> Thumbnail<'a> {
         )
         .context(format!("Failed to set window always-on-top for '{}'", character_name))?;
 
+        // Map window to make it visible
         ctx.conn.map_window(window)
             .inspect_err(|e| error!("Failed to map thumbnail window {}: {:?}", window, e))
             .context(format!("Failed to map thumbnail window for '{}'", character_name))?;
         info!("Mapped thumbnail window {} for '{}'", window, character_name);
 
+        Ok(())
+    }
+
+    /// Create render pictures and resources
+    fn create_render_resources(
+        ctx: &AppContext,
+        window: Window,
+        src: Window,
+        dimensions: Dimensions,
+        character_name: &str,
+    ) -> Result<(Picture, Picture, Picture, Pixmap, Picture, Gcontext)> {
+        // Border fill
         let border_fill = ctx.conn.generate_id()
             .context("Failed to generate ID for border fill picture")?;
         ctx.conn.render_create_solid_fill(border_fill, ctx.config.border_color)
             .context(format!("Failed to create border fill for '{}'", character_name))?;
 
+        // Source and destination pictures
         let pict_format = get_pictformat(ctx.conn, ctx.screen.root_depth, false)
             .context("Failed to get picture format for thumbnail rendering")?;
         let src_picture = ctx.conn.generate_id()
@@ -168,6 +179,7 @@ impl<'a> Thumbnail<'a> {
         ctx.conn.render_create_picture(dst_picture, window, pict_format, &CreatePictureAux::new())
             .context(format!("Failed to create destination picture for '{}'", character_name))?;
 
+        // Overlay resources
         let overlay_pixmap = ctx.conn.generate_id()
             .context("Failed to generate ID for overlay pixmap")?;
         let overlay_picture = ctx.conn.generate_id()
@@ -193,38 +205,84 @@ impl<'a> Thumbnail<'a> {
         )
         .context(format!("Failed to create graphics context for '{}'", character_name))?;
 
+        Ok((border_fill, src_picture, dst_picture, overlay_pixmap, overlay_picture, overlay_gc))
+    }
+
+    /// Create damage tracking for source window
+    fn create_damage_tracking(
+        ctx: &AppContext,
+        src: Window,
+        character_name: &str,
+    ) -> Result<Damage> {
         let damage = ctx.conn.generate_id()
             .context("Failed to generate ID for damage tracking")?;
         ctx.conn.damage_create(damage, src, DamageReportLevel::RAW_RECTANGLES)
             .context(format!("Failed to create damage tracking for '{}' (check DAMAGE extension)", character_name))?;
+        Ok(damage)
+    }
 
-        let mut _self = Self {
+    pub fn new(
+        ctx: &AppContext<'a>,
+        character_name: String,
+        src: Window,
+        font_renderer: &'a FontRenderer,
+        position: Option<Position>,
+        dimensions: Dimensions,
+    ) -> Result<Self> {
+        // Query source window geometry
+        let src_geom = ctx.conn.get_geometry(src)
+            .context("Failed to send geometry query for source EVE window")?
+            .reply()
+            .context(format!("Failed to get geometry for source window {} (character: '{}')", src, character_name))?;
+        
+        // Use saved position OR top-left of EVE window with 20px padding
+        let Position { x, y } = position.unwrap_or_else(|| {
+            Position::new(
+                src_geom.x + positioning::DEFAULT_SPAWN_OFFSET,
+                src_geom.y + positioning::DEFAULT_SPAWN_OFFSET,
+            )
+        });
+        info!("Creating thumbnail for '{}' at position ({}, {}) with size {}x{}", 
+              character_name, x, y, dimensions.width, dimensions.height);
+
+        // Create window and setup properties
+        let window = Self::create_window(ctx, &character_name, x, y, dimensions)?;
+        Self::setup_window_properties(ctx, window, &character_name)?;
+
+        // Create rendering resources
+        let (border_fill, src_picture, dst_picture, overlay_pixmap, overlay_picture, overlay_gc) = 
+            Self::create_render_resources(ctx, window, src, dimensions, &character_name)?;
+
+        // Setup damage tracking
+        let damage = Self::create_damage_tracking(ctx, src, &character_name)?;
+
+        let thumbnail = Self {
             dimensions,
             window,
             config: ctx.config,
             font_renderer,
-
             border_fill,
             src_picture,
             dst_picture,
             overlay_gc,
             overlay_pixmap,
             overlay_picture,
-
             character_name,
             focused: false,
             visible: true,
             minimized: false,
-
             src,
             root: ctx.screen.root,
             damage,
             input_state: InputState::default(),
             conn: ctx.conn,
         };
-        _self.update_name()
-            .context(format!("Failed to render initial name overlay for '{}'", _self.character_name))?;
-        Ok(_self)
+        
+        // Render initial name overlay
+        thumbnail.update_name()
+            .context(format!("Failed to render initial name overlay for '{}'", thumbnail.character_name))?;
+        
+        Ok(thumbnail)
     }
 
     pub fn visibility(&mut self, visible: bool) -> Result<()> {
