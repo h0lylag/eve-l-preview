@@ -1,127 +1,135 @@
 # eve-l-preview
 
-An X11 EVE-O Preview lookalike. Works flawlessly on Wayland as long as you run Wine/Proton through XWayland (default behaviour).
+Rust reimplementation of my Python [EVE-L-Preview](https://github.com/h0lylag/Py-EVE-L_Preview) project. This is basically a Linux clone of the EVE-O Preview tool that Windows players use to manage multiple EVE clients.
+
+Big thanks to [ilveth](https://github.com/ilveth/eve-l-preview) for figuring out the X11 window thumbnail rendering that I was stuck on. Their implementation got me unstuck and made this project possible.
+
+## What it does
+
+Creates small preview windows for each EVE client you have running. Each preview shows what's happening in the actual game window in real-time. Click a preview to focus that client, drag them around to organize your screen, and use Tab/Shift+Tab to quickly cycle between characters.
+
+Works great on Wayland as long as you're running EVE through Wine/Proton in XWayland mode (which is the default).
 
 ## Features
 
-- Highlight border for the active EVE client
-- Left-click to focus a client
-- Right-click and drag to reposition thumbnails
-- **Tab/Shift+Tab hotkeys to cycle through clients**
-- Character name overlay
-- Per-character thumbnail positions and dimensions
-- Optional hide-when-unfocused mode
-- Edge and corner snapping when dragging
-- Extremely lightweight (<1 MiB RAM)
-- Fully configurable via TOML config file + environment variable overrides
+- Real-time thumbnails of each EVE client window
+- Click a preview to switch to that client
+- Drag previews around to organize them however you want
+- Tab/Shift+Tab hotkeys for quick character switching
+- Shows character names on each preview
+- Remembers where you put each character's preview
+- Optional edge/corner snapping when dragging
+- Hide all previews when you alt-tab out of EVE
+- Uses almost no RAM or CPU
+- Configure everything via a TOML file or environment variables
 
 ## Configuration
 
-Configuration is loaded from `~/.config/eve-l-preview/eve-l-preview.toml` (auto-generated on first run).
-Environment variables override TOML values for quick testing.
+The config file lives at `~/.config/eve-l-preview/eve-l-preview.toml` and gets created automatically the first time you run the program. You can edit it to change colors, sizes, positions, whatever. Environment variables will override the TOML settings if you want to test something quickly.
 
-### TOML Configuration
+### Example config
 
 ```toml
-# Global display settings
+# How see-through the previews are (0-100)
 opacity_percent = 75
+
+# Border around the active client's preview
 border_size = 3
-border_color = "#7FFF0000"
+border_color = "#7FFF0000"  # Red with 50% transparency
+
+# Character name positioning and color
 text_x = 10
-text_y = 20
-text_foreground = "#FFFFFFFF"
-text_background = "#7F000000"
+text_y = 10
+text_color = "#FFFFFFFF"  # White
+text_size = 18
+
+# Hide previews when you're not in an EVE window
 hide_when_no_focus = false
+
+# Snap previews to edges when dragging (pixels)
 snap_threshold = 15
 
-# Hotkey cycling order (Tab/Shift+Tab)
-# Edit this list with your actual character names!
-# The order here determines Tab/Shift+Tab cycling order
-hotkey_order = ["Main Character", "Alt 1", "Alt 2"]
+# Only allow Tab cycling when an EVE window is focused
+hotkey_require_eve_focus = true
 
-# Per-character settings
+# Tab/Shift+Tab cycling order
+# Put your character names here in the order you want to cycle through them
+hotkey_order = ["Main", "Hauler Alt", "Scout"]
+
+# Per-character settings (these get saved automatically when you drag previews around)
 [characters."Main"]
 x = 100
 y = 200
 width = 480
 height = 270
 
-[characters."Alt1"]
+[characters."Hauler Alt"]
 x = 600
 y = 200
 width = 480
 height = 270
 ```
 
-### Configuration Options
+### Config options
 
-| Setting | Type | Default | Description |
+| Setting | Type | Default | What it does |
 |-----------|------|----------|-------------|
-| `opacity_percent` | u8 | 75 | Thumbnail opacity (0-100%) |
-| `border_size` | u16 | 5 | Border width in pixels |
-| `border_color` | Hex | `#7FFF0000` | Border color (ARGB format) |
-| `text_x` | i16 | 10 | Character name X offset  |
-| `text_y` | i16 | 20 | Character name Y offset |
-| `text_foreground` | Hex | `#FFFFFFFF` | Text color (ARGB format) |
-| `text_background` | Hex | `#7F000000` | Text background (ARGB format) |
-| `hide_when_no_focus` | bool | false | Hide thumbnails when all clients unfocused |
-| `snap_threshold` | u16 | 15 | Snap distance in pixels (0 = disabled) |
-| `hotkey_order` | Array | `[]` | Character order for Tab cycling |
+| `opacity_percent` | 0-100 | 80 | How transparent the previews are |
+| `border_size` | number | 5 | Border width in pixels around focused preview |
+| `border_color` | hex | `#7FFF0000` | Border color (AARRGGBB format) |
+| `text_x` | number | 10 | Where to draw character name (horizontal) |
+| `text_y` | number | 10 | Where to draw character name (vertical) |
+| `text_color` | hex | `#FFFFFFFF` | Character name text color |
+| `text_size` | number | 18 | Character name font size |
+| `hide_when_no_focus` | true/false | false | Hide previews when no EVE window is focused |
+| `snap_threshold` | number | 15 | How close to snap to edges (0 = off) |
+| `hotkey_require_eve_focus` | true/false | true | Only allow Tab cycling when EVE is focused |
+| `hotkey_order` | list | `[]` | Order of characters for Tab cycling |
 
-**Per-character settings** (saved automatically on drag):
-- `x`, `y` - Window position
-- `width`, `height` - Thumbnail dimensions
+The per-character settings (`x`, `y`, `width`, `height`) get saved automatically when you drag previews around or when you first log into a character.
 
-### Environment Variable Overrides
+### Environment variable overrides
 
-All global settings can be overridden via environment variables:
+You can override settings temporarily with environment variables:
 
 ```bash
 OPACITY=0xC0000000 BORDER_COLOR=0xFF00FF00 eve-l-preview
 ```
 
-| Variable | Type | Description |
-|-----------|------|-------------|
-| `OPACITY` | u32 | Thumbnail opacity (ARGB format) |
-| `BORDER_SIZE` | u16 | Border width |
-| `BORDER_COLOR` | u32 | Border color (ARGB hex) |
-| `TEXT_X` | i16 | Text X position  |
-| `TEXT_Y` | i16 | Text Y position |
-| `TEXT_FOREGROUND` | u32 | Text color (ARGB hex) |
-| `TEXT_BACKGROUND` | u32 | Text background (ARGB hex) |
-| `HIDE_WHEN_NO_FOCUS` | bool | Hide when unfocused |
+Supported variables: `OPACITY`, `BORDER_SIZE`, `BORDER_COLOR`, `TEXT_X`, `TEXT_Y`, `TEXT_COLOR`, `HIDE_WHEN_NO_FOCUS`
 
-> Colors support both hex (`0xAARRGGBB` or `#AARRGGBB`) and decimal formats.
+Colors can be hex (`0xAARRGGBB` or `#AARRGGBB`) or decimal.
 
 ## Usage
 
-Run before or after launching EVE clients. The application uses minimal resources, especially under XWayland.
+Just run it. Doesn't matter if you start it before or after launching your EVE clients - it'll pick them up either way.
 
-### Hotkey Controls
+### Hotkeys
 
-**Tab/Shift+Tab cycling requires `input` group membership:**
+The Tab/Shift+Tab cycling requires you to be in the `input` group:
 
 ```bash
 sudo usermod -a -G input $USER
-# Log out and back in for changes to take effect
 ```
 
-Once configured:
-- **Tab** - Cycle forward through clients
-- **Shift+Tab** - Cycle backward through clients
-- **Left-click thumbnail** - Focus that client and set as current for next Tab press
-- **Right-click and drag** - Reposition thumbnail
+Then log out and back in. After that:
+- **Tab** - Next character
+- **Shift+Tab** - Previous character  
+- **Left-click a preview** - Focus that client
+- **Right-click and drag** - Move the preview around
 
-The cycle order follows the `hotkey_order` array in your config. Characters are auto-added when detected, but you can manually reorder them. Clicking a thumbnail makes it the current position for the next Tab press.
+By default (`hotkey_require_eve_focus = true`), Tab cycling only works when you're focused on an EVE window. This prevents accidentally cycling when you're tabbed out to a browser or whatever. Set it to `false` if you want Tab to work globally.
 
-**If hotkey permissions are not set up**, the application continues without hotkey support (click-to-focus still works).
+The cycle order follows your `hotkey_order` list in the config. Characters get added automatically when they log in, but you should edit the list to put them in the order you want.
 
-### Logging
+If you don't set up the input group permissions, the program still works fine - you just won't have Tab cycling. Click-to-focus still works normally.
 
-Set log level for debugging:
+### Debug logging
+
+If something's not working right:
 
 ```bash
 LOG_LEVEL=debug eve-l-preview
 ```
 
-Valid levels: `trace`, `debug`, `info` (default), `warn`, `error`
+Levels: `trace`, `debug`, `info` (default), `warn`, `error`
