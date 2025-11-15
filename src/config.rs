@@ -22,7 +22,6 @@ pub struct DisplayConfig {
     pub text_x: i16,
     pub text_y: i16,
     pub text_foreground: u32,
-    pub text_background: u32,
     pub hide_when_no_focus: bool,
 }
 
@@ -45,14 +44,17 @@ pub struct GlobalSettings {
     #[serde(rename = "opacity_percent")]
     opacity_percent: u8,
     pub border_size: u16,
-    #[serde(rename = "border_color", serialize_with = "serialize_color", deserialize_with = "deserialize_color")]
+    #[serde(rename = "border_color")]
     border_color_hex: String,
     pub text_x: i16,
     pub text_y: i16,
-    #[serde(rename = "text_foreground")]
-    text_foreground_hex: String,
-    #[serde(rename = "text_background")]
-    text_background_hex: String,
+    #[serde(rename = "text_color")]
+    text_color_hex: String,
+    
+    /// Text size in pixels (accepts integer or float)
+    #[serde(rename = "text_size", default = "default_text_size", deserialize_with = "deserialize_text_size", serialize_with = "serialize_text_size")]
+    pub text_size: f32,
+    
     pub hide_when_no_focus: bool,
     
     /// Snap threshold in pixels (0 = disabled)
@@ -71,6 +73,44 @@ pub struct GlobalSettings {
     /// Characters are auto-added when first seen, but can be manually ordered
     #[serde(default)]
     pub hotkey_order: Vec<String>,
+}
+
+fn default_text_size() -> f32 {
+    18.0
+}
+
+/// Custom deserializer that accepts both integer and float for text_size
+fn deserialize_text_size<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum IntOrFloat {
+        Int(i64),
+        Float(f32),
+    }
+    
+    match IntOrFloat::deserialize(deserializer)? {
+        IntOrFloat::Int(i) => Ok(i as f32),
+        IntOrFloat::Float(f) => Ok(f),
+    }
+}
+
+/// Custom serializer that writes whole numbers without decimal point
+fn serialize_text_size<S>(value: &f32, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    if value.fract() == 0.0 {
+        // Whole number - serialize as integer
+        serializer.serialize_i64(*value as i64)
+    } else {
+        // Has decimal - serialize as float
+        serializer.serialize_f32(*value)
+    }
 }
 
 fn default_snap_threshold() -> u16 {
@@ -124,25 +164,21 @@ impl PersistentState {
     /// Note: Per-character dimensions are not included here - they're in CharacterSettings
     pub fn build_display_config(&self) -> DisplayConfig {
         // Parse colors from hex strings using color module
+        // Supports both 6-digit (RRGGBB) and 8-digit (AARRGGBB) formats
+        // 6-digit format automatically gets full opacity (FF) prepended
+        // Optional '#' prefix is supported but not required
         let border_color = HexColor::parse(&self.global.border_color_hex)
             .map(|c| c.to_x11_color())
             .unwrap_or_else(|| {
                 error!("Invalid border_color hex, using default");
-                HexColor::from_argb32(0x7FFF0000).to_x11_color()
+                HexColor::from_argb32(0xFFFF0000).to_x11_color()
             });
         
-        let text_foreground = HexColor::parse(&self.global.text_foreground_hex)
-            .map(|c| c.to_premultiplied_argb32())
+        let text_foreground = HexColor::parse(&self.global.text_color_hex)
+            .map(|c| c.argb32())  // Use raw ARGB, not premultiplied
             .unwrap_or_else(|| {
-                error!("Invalid text_foreground hex, using default");
-                HexColor::from_argb32(0xFF_FF_FF_FF).to_premultiplied_argb32()
-            });
-        
-        let text_background = HexColor::parse(&self.global.text_background_hex)
-            .map(|c| c.to_premultiplied_argb32())
-            .unwrap_or_else(|| {
-                error!("Invalid text_background hex, using default");
-                HexColor::from_argb32(0x7F_00_00_00).to_premultiplied_argb32()
+                error!("Invalid text_color hex, using default");
+                HexColor::from_argb32(0xFF_FF_FF_FF).argb32()
             });
         
         let opacity = Opacity::from_percent(self.global.opacity_percent).to_argb32();
@@ -154,7 +190,6 @@ impl PersistentState {
             text_x: self.global.text_x,
             text_y: self.global.text_y,
             text_foreground,
-            text_background,
             hide_when_no_focus: self.global.hide_when_no_focus,
         }
     }
@@ -162,20 +197,29 @@ impl PersistentState {
         // Try to load existing config file
         let config_path = Self::config_path();
         if let Ok(contents) = fs::read_to_string(&config_path) {
-            if let Ok(mut state) = toml::from_str::<PersistentState>(&contents) {
-                // Apply env var overrides
-                state.apply_env_overrides();
-                
-                // Auto-save if config is missing new fields (e.g., default_width/default_height)
-                // This ensures existing configs get updated with new options
-                if !contents.contains("default_width") || !contents.contains("default_height") {
-                    info!("Updating config with new fields (default_width, default_height)");
-                    if let Err(e) = state.save() {
-                        error!("Failed to update config: {e:?}");
+            match toml::from_str::<PersistentState>(&contents) {
+                Ok(mut state) => {
+                    // Apply env var overrides
+                    state.apply_env_overrides();
+                    
+                    // Auto-save if config is missing new fields (e.g., default_width/default_height)
+                    // This ensures existing configs get updated with new options
+                    if !contents.contains("default_width") || !contents.contains("default_height") {
+                        info!("Updating config with new fields (default_width, default_height)");
+                        if let Err(e) = state.save() {
+                            error!("Failed to update config: {e:?}");
+                        }
                     }
+                    
+                    return state;
                 }
-                
-                return state;
+                Err(e) => {
+                    error!("Failed to parse config file at {}: {}", config_path.display(), e);
+                    error!("Please fix the syntax errors in your config file.");
+                    error!("The file has been preserved - check for missing quotes around color values.");
+                    // Don't overwrite the broken config - user needs to fix it
+                    std::process::exit(1);
+                }
             }
         }
 
@@ -279,10 +323,9 @@ impl PersistentState {
     }
 
     fn from_env(_screen_size: Option<(u16, u16)>) -> Self {
-        let border_color_raw = Self::parse_num("BORDER_COLOR").unwrap_or(0x7FFF0000);
-        let opacity = Self::parse_num("OPACITY").unwrap_or(0xC0000000);
-        let text_fg_raw = Self::parse_num("TEXT_FOREGROUND").unwrap_or(0xFF_FF_FF_FF);
-        let text_bg_raw = Self::parse_num("TEXT_BACKGROUND").unwrap_or(0x7F_00_00_00);
+        let border_color_raw = Self::parse_num("BORDER_COLOR").unwrap_or(0xFFFF0000);
+        let opacity = Self::parse_num("OPACITY").unwrap_or(0xCC000000);  // 80% opacity (0xCC = 204)
+        let text_color_raw = Self::parse_num("TEXT_COLOR").unwrap_or(0xFF_FF_FF_FF);
         
         // No global width/height - dimensions are per-character now
         // Screen size is used only for auto-detecting new characters in runtime
@@ -293,12 +336,12 @@ impl PersistentState {
                 border_size: Self::parse_num("BORDER_SIZE").unwrap_or(5),
                 border_color_hex: HexColor::from_argb32(border_color_raw).to_hex_string(),
                 text_x: Self::parse_num("TEXT_X").unwrap_or(10),
-                text_y: Self::parse_num("TEXT_Y").unwrap_or(20),
-                text_foreground_hex: HexColor::from_argb32(text_fg_raw).to_hex_string(),
-                text_background_hex: HexColor::from_argb32(text_bg_raw).to_hex_string(),
+                text_y: Self::parse_num("TEXT_Y").unwrap_or(10),
+                text_color_hex: HexColor::from_argb32(text_color_raw).to_hex_string(),
                 hide_when_no_focus: env::var("HIDE_WHEN_NO_FOCUS")
                     .map(|x| x.parse().unwrap_or(false))
                     .unwrap_or(false),
+                text_size: 18.0,
                 snap_threshold: 15,
                 default_width: 250,
                 default_height: 141,
@@ -330,11 +373,8 @@ impl PersistentState {
         if let Some(text_y) = Self::parse_num("TEXT_Y") {
             self.global.text_y = text_y;
         }
-        if let Some(text_fg) = Self::parse_num("TEXT_FOREGROUND") {
-            self.global.text_foreground_hex = HexColor::from_argb32(text_fg).to_hex_string();
-        }
-        if let Some(text_bg) = Self::parse_num("TEXT_BACKGROUND") {
-            self.global.text_background_hex = HexColor::from_argb32(text_bg).to_hex_string();
+        if let Some(text_color) = Self::parse_num("TEXT_COLOR") {
+            self.global.text_color_hex = HexColor::from_argb32(text_color).to_hex_string();
         }
         if let Ok(hide) = env::var("HIDE_WHEN_NO_FOCUS") {
             self.global.hide_when_no_focus = hide.parse().unwrap_or(false);
@@ -353,8 +393,7 @@ mod tests {
         border_color_hex: &str,
         text_x: i16,
         text_y: i16,
-        text_foreground_hex: &str,
-        text_background_hex: &str,
+        text_color_hex: &str,
         hide_when_no_focus: bool,
         snap_threshold: u16,
     ) -> GlobalSettings {
@@ -364,9 +403,9 @@ mod tests {
             border_color_hex: border_color_hex.to_string(),
             text_x,
             text_y,
-            text_foreground_hex: text_foreground_hex.to_string(),
-            text_background_hex: text_background_hex.to_string(),
+            text_color_hex: text_color_hex.to_string(),
             hide_when_no_focus,
+            text_size: 18.0,
             snap_threshold,
             default_width: 250,
             default_height: 141,
@@ -383,8 +422,7 @@ mod tests {
                 "#FF00FF00",  // Green border
                 15,  // text_x
                 25,  // text_y
-                "#FFFFFFFF",  // White text
-                "#80000000",  // 50% transparent black background
+                "#FFFFFFFF",  // White text color
                 true,  // hide_when_no_focus
                 20,  // snap_threshold
             ),
@@ -416,8 +454,7 @@ mod tests {
                 "invalid",  // invalid border color
                 10,   // text_x
                 20,   // text_y
-                "also_invalid",  // invalid text foreground
-                "nope",  // invalid text background
+                "also_invalid",  // invalid text color
                 false,  // hide_when_no_focus
                 15,  // snap_threshold
             ),
@@ -429,18 +466,18 @@ mod tests {
         // Opacity: 100% → 0xFF
         assert_eq!(config.opacity, 0xFF000000);
         
-        // Default border_color: 0x7FFF0000 (red with 50% alpha)
-        // Alpha conversion: 0x7F (127) * 257 = 32639 in 16-bit
+        // Default border_color: 0xFFFF0000 (opaque red)
+        // Alpha conversion: 0xFF (255) * 257 = 65535 in 16-bit
         assert_eq!(config.border_color.red, 65535);
         assert_eq!(config.border_color.blue, 0);
-        assert_eq!(config.border_color.alpha, 32639); // 0x7F → 32639 (not 32767)
+        assert_eq!(config.border_color.alpha, 65535);
     }
 
     #[test]
     fn test_update_position_with_character_name() {
         let mut state = PersistentState {
             global: test_global_settings(
-                75, 5, "#7FFF0000", 10, 20, "#FFFFFFFF", "#7F000000", false, 15
+                75, 3, "#FF00FF00", 10, 20, "#FFFFFFFF", false, 15,
             ),
             character_positions: HashMap::new(),
         };
@@ -459,7 +496,7 @@ mod tests {
     fn test_update_position_empty_name_ignored() {
         let mut state = PersistentState {
             global: test_global_settings(
-                75, 5, "#7FFF0000", 10, 20, "#FFFFFFFF", "#7F000000", false, 15
+                75, 3, "#FF00FF00", 10, 20, "#FFFFFFFF", false, 15,
             ),
             character_positions: HashMap::new(),
         };
@@ -474,7 +511,7 @@ mod tests {
     fn test_handle_character_change_both_names() {
         let mut state = PersistentState {
             global: test_global_settings(
-                75, 5, "#7FFF0000", 10, 20, "#FFFFFFFF", "#7F000000", false, 15
+                75, 3, "#FF00FF00", 10, 20, "#FFFFFFFF", false, 15,
             ),
             character_positions: HashMap::from([("NewChar".to_string(), CharacterSettings::new(500, 600, 240, 135))]),
         };
@@ -504,7 +541,7 @@ mod tests {
     fn test_handle_character_change_logout() {
         let mut state = PersistentState {
             global: test_global_settings(
-                75, 5, "#7FFF0000", 10, 20, "#FFFFFFFF", "#7F000000", false, 15
+                75, 3, "#FF00FF00", 10, 20, "#FFFFFFFF", false, 15,
             ),
             character_positions: HashMap::new(),
         };
@@ -527,7 +564,7 @@ mod tests {
     fn test_handle_character_change_new_character_no_saved_position() {
         let mut state = PersistentState {
             global: test_global_settings(
-                75, 5, "#7FFF0000", 10, 20, "#FFFFFFFF", "#7F000000", false, 15
+                75, 3, "#FF00FF00", 10, 20, "#FFFFFFFF", false, 15,
             ),
             character_positions: HashMap::new(),
         };
@@ -547,7 +584,7 @@ mod tests {
         // Test that opacity_percent converts correctly through Opacity type
         let state = PersistentState {
             global: test_global_settings(
-                50, 5, "#7FFF0000", 10, 20, "#FFFFFFFF", "#7F000000", false, 15
+                50, 3, "#FF00FF00", 10, 20, "#FFFFFFFF", false, 15,
             ),
             character_positions: HashMap::new(),
         };

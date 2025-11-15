@@ -4,6 +4,7 @@ mod color;
 mod config;
 mod cycle_state;
 mod event_handler;
+mod font;
 mod hotkeys;
 mod persistence;
 mod snapping;
@@ -69,8 +70,6 @@ fn check_and_create_window<'a>(
             &ChangeWindowAttributesAux::new()
                 .event_mask(EventMask::PROPERTY_CHANGE | EventMask::FOCUS_CHANGE),
         )?;
-        let font = ctx.conn.generate_id()?;
-        ctx.conn.open_font(font, b"fixed")?;
         
         // Get saved position and dimensions for this character/window
         let position = state.get_position(&character_name, window, &persistent_state.character_positions);
@@ -95,8 +94,7 @@ fn check_and_create_window<'a>(
             )
         };
         
-        let thumbnail = Thumbnail::new(ctx, character_name, window, font, position, width, height)?;
-        ctx.conn.close_font(font)?;
+        let thumbnail = Thumbnail::new(ctx, character_name, window, ctx.font_renderer, position, width, height)?;
         info!("constructed Thumbnail for eve window: window={window}");
         Ok(Some(thumbnail))
     } else {
@@ -199,6 +197,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Pre-cache atoms once at startup (eliminates roundtrip overhead)
     let atoms = CachedAtoms::new(&conn)?;
     
+    // Initialize font renderer with TrueType font (size from config)
+    let font_renderer = font::FontRenderer::from_system_font(persistent_state.global.text_size)?;
+    info!("Font renderer initialized with size: {}", persistent_state.global.text_size);
+    
     conn.damage_query_version(1, 1)?;
     conn.change_window_attributes(
         screen.root,
@@ -215,6 +217,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         screen,
         config: &config,
         atoms: &atoms,
+        font_renderer: &font_renderer,
     };
 
     let mut eves = get_eves(&ctx, &persistent_state, &session_state)?;

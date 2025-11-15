@@ -1,4 +1,6 @@
-{ pkgs ? import <nixpkgs> { } }:
+{
+  pkgs ? import <nixpkgs> { },
+}:
 let
   manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
   cross = pkgs.pkgsCross.musl64;
@@ -16,4 +18,9 @@ cross.rustPlatform.buildRustPackage rec {
 
   nativeBuildInputs = [ cross.musl ];
   buildInputs = [ ];
+
+  # Provide font path at build time
+  preBuild = ''
+    export FONT_PATH="${pkgs.nerd-fonts.roboto-mono}/share/fonts/truetype/NerdFonts/RobotoMono/RobotoMonoNerdFont-Regular.ttf"
+  '';
 }

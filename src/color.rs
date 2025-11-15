@@ -13,10 +13,23 @@ use x11rb::protocol::render::Color;
 pub struct HexColor(u32);
 
 impl HexColor {
-    /// Parse hex color string (e.g., "#7FFF0000" or "7FFF0000")
+    /// Parse hex color string supporting multiple formats:
+    /// - 6 digits: RRGGBB (full opacity assumed, becomes FFRRGGBB)
+    /// - 8 digits: AARRGGBB (explicit alpha)
+    /// - Optional '#' prefix supported but not required
     pub fn parse(hex: &str) -> Option<Self> {
         let hex = hex.strip_prefix('#').unwrap_or(hex);
-        u32::from_str_radix(hex, 16).ok().map(Self)
+        let value = u32::from_str_radix(hex, 16).ok()?;
+        
+        // If 6 digits (RRGGBB), prepend full opacity (FF)
+        // Check if value fits in 24 bits (max 0xFFFFFF)
+        let argb = if value <= 0xFF_FF_FF {
+            0xFF_00_00_00 | value  // Prepend FF for full opacity
+        } else {
+            value  // Already has alpha channel
+        };
+        
+        Some(Self(argb))
     }
 
     /// Create from ARGB32 value
@@ -103,9 +116,18 @@ mod tests {
 
     #[test]
     fn test_hex_color_parsing() {
+        // 8-digit format (AARRGGBB)
         assert_eq!(HexColor::parse("#7FFF0000"), Some(HexColor(0x7FFF0000)));
         assert_eq!(HexColor::parse("7FFF0000"), Some(HexColor(0x7FFF0000)));
         assert_eq!(HexColor::parse("FFFFFFFF"), Some(HexColor(0xFFFFFFFF)));
+        
+        // 6-digit format (RRGGBB) - should prepend FF for full opacity
+        assert_eq!(HexColor::parse("#FF0000"), Some(HexColor(0xFFFF0000)));
+        assert_eq!(HexColor::parse("FF0000"), Some(HexColor(0xFFFF0000)));
+        assert_eq!(HexColor::parse("#5bfc37"), Some(HexColor(0xFF5bfc37)));
+        assert_eq!(HexColor::parse("5bfc37"), Some(HexColor(0xFF5bfc37)));
+        
+        // Invalid
         assert_eq!(HexColor::parse("invalid"), None);
         assert_eq!(HexColor::parse(""), None);
     }

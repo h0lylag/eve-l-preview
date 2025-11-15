@@ -12,6 +12,7 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as WrapperExt;
 
 use crate::config::DisplayConfig;
+use crate::font::FontRenderer;
 use crate::types::Position;
 use crate::x11_utils::{get_pictformat, to_fixed, AppContext};
 
@@ -31,6 +32,7 @@ pub struct Thumbnail<'a> {
     pub height: u16,
 
     config: &'a DisplayConfig,
+    font_renderer: &'a FontRenderer,
     border_fill: Picture,
 
     src_picture: Picture,
@@ -56,7 +58,7 @@ impl<'a> Thumbnail<'a> {
         ctx: &AppContext<'a>,
         character_name: String,
         src: Window,
-        font: Font,
+        font_renderer: &'a FontRenderer,
         position: Option<Position>,
         width: u16,
         height: u16,
@@ -149,9 +151,7 @@ impl<'a> Thumbnail<'a> {
             overlay_gc,
             overlay_pixmap,
             &CreateGCAux::new()
-                .font(font)
-                .foreground(ctx.config.text_foreground)
-                .background(ctx.config.text_background),
+                .foreground(ctx.config.text_foreground),
         )?;
 
         let damage = ctx.conn.generate_id()?;
@@ -164,6 +164,7 @@ impl<'a> Thumbnail<'a> {
             height,
             window,
             config: ctx.config,
+            font_renderer,
 
             border_fill,
             src_picture,
@@ -288,6 +289,7 @@ impl<'a> Thumbnail<'a> {
     }
 
     pub fn update_name(&self) -> Result<()> {
+        // Clear the overlay area (inside border)
         self.conn.render_composite(
             PictOp::CLEAR,
             self.overlay_picture,
@@ -302,13 +304,77 @@ impl<'a> Thumbnail<'a> {
             self.width - self.config.border_size * 2,
             self.height - self.config.border_size * 2,
         )?;
-        self.conn.image_text8(
-            self.overlay_pixmap,
-            self.overlay_gc,
-            self.config.text_x,
-            self.config.text_y,
-            self.character_name.as_bytes(),
+        
+        // Render text with fontdue
+        let rendered = self.font_renderer.render_text(
+            &self.character_name,
+            self.config.text_foreground,
         )?;
+        
+        if rendered.width > 0 && rendered.height > 0 {
+            // Upload rendered text bitmap to X11
+            let depth = 32; // ARGB
+            let text_pixmap = self.conn.generate_id()?;
+            self.conn.create_pixmap(
+                depth,
+                text_pixmap,
+                self.overlay_pixmap,
+                rendered.width as u16,
+                rendered.height as u16,
+            )?;
+            
+            // Convert Vec<u32> ARGB to bytes in X11 native format (little-endian BGRA)
+            let mut image_data = Vec::with_capacity(rendered.data.len() * 4);
+            for pixel in &rendered.data {
+                image_data.push(*pixel as u8);        // B
+                image_data.push((pixel >> 8) as u8);  // G
+                image_data.push((pixel >> 16) as u8); // R
+                image_data.push((pixel >> 24) as u8); // A
+            }
+            
+            self.conn.put_image(
+                ImageFormat::Z_PIXMAP,
+                text_pixmap,
+                self.overlay_gc,
+                rendered.width as u16,
+                rendered.height as u16,
+                0,
+                0,
+                0,
+                depth,
+                &image_data,
+            )?;
+            
+            // Create picture for the text pixmap
+            let text_picture = self.conn.generate_id()?;
+            self.conn.render_create_picture(
+                text_picture,
+                text_pixmap,
+                get_pictformat(self.conn, 32, true)?,
+                &CreatePictureAux::new(),
+            )?;
+            
+            // Composite text onto overlay
+            self.conn.render_composite(
+                PictOp::OVER,
+                text_picture,
+                0u32,
+                self.overlay_picture,
+                0,
+                0,
+                0,
+                0,
+                self.config.text_x,
+                self.config.text_y,
+                rendered.width as u16,
+                rendered.height as u16,
+            )?;
+            
+            // Cleanup
+            self.conn.render_free_picture(text_picture)?;
+            self.conn.free_pixmap(text_pixmap)?;
+        }
+        
         Ok(())
     }
 

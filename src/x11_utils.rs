@@ -7,6 +7,7 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as WrapperExt;
 
 use crate::config::DisplayConfig;
+use crate::font::FontRenderer;
 
 /// Application context holding immutable shared state
 pub struct AppContext<'a> {
@@ -14,6 +15,7 @@ pub struct AppContext<'a> {
     pub screen: &'a Screen,
     pub config: &'a DisplayConfig,
     pub atoms: &'a CachedAtoms,
+    pub font_renderer: &'a FontRenderer,
 }
 
 /// Pre-cached X11 atoms to avoid repeated roundtrips
