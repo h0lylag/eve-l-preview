@@ -1,3 +1,8 @@
+//! Persistent state configuration for preview daemon
+//!
+//! Flattened TOML structure used by the X11 preview daemon.
+//! This is the original config system from Phase 1.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -11,6 +16,11 @@ use crate::color::{HexColor, Opacity};
 use toml_edit::{Document, value, Array};
 use std::str::FromStr;
 use crate::types::{CharacterSettings, Position, TextOffset};
+
+
+// ==============================================================================
+// Phase 1: Original PersistentState (still used by preview daemon)
+// ==============================================================================
 
 /// Immutable display settings (loaded once at startup)
 /// Can be borrowed by Thumbnails without RefCell
@@ -261,6 +271,72 @@ impl PersistentState {
         }
     }
     pub fn load() -> Self {
+        // Load new profile-based config format
+        let config_path = Self::config_path();
+        if let Ok(contents) = fs::read_to_string(&config_path) {
+            match toml::from_str::<crate::config::profile::Config>(&contents) {
+                Ok(profile_config) => {
+                    info!("Loading daemon config from profile-based format");
+                    return Self::from_profile_config(profile_config);
+                }
+                Err(e) => {
+                    error!(path = %config_path.display(), error = %e, "Failed to parse config file");
+                    error!(path = %config_path.display(), "Please fix the syntax errors in your config file.");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        // No config file - generate default from env vars
+        info!("No config file found, generating default");
+        let mut state = Self::from_env(None);
+        state.validate_and_clamp();
+        state
+    }
+
+    /// Convert from profile-based Config to daemon PersistentState
+    /// Extracts the selected profile's settings
+    fn from_profile_config(config: crate::config::profile::Config) -> Self {
+        // Find the selected profile
+        let profile = config.profiles
+            .iter()
+            .find(|p| p.name == config.manager.selected_profile)
+            .or_else(|| config.profiles.first())
+            .expect("Config must have at least one profile");
+        
+        info!(profile = %profile.name, "Using profile for daemon settings");
+        
+        // Convert profile to GlobalSettings (old flattened format)
+        let global = GlobalSettings {
+            opacity_percent: profile.opacity_percent,
+            border_size: profile.border_size,
+            border_color_hex: profile.border_color.clone(),
+            text_x: profile.text_x,
+            text_y: profile.text_y,
+            text_color_hex: profile.text_foreground.clone(), // Use foreground as main text color
+            text_size: profile.text_size as f32,
+            hide_when_no_focus: profile.hide_when_no_focus,
+            snap_threshold: profile.snap_threshold,
+            default_width: default_width(),
+            default_height: default_height(),
+            hotkey_order: profile.hotkey_order.clone(),
+            hotkey_require_eve_focus: profile.hotkey_require_eve_focus,
+        };
+        
+        let mut state = PersistentState {
+            global,
+            character_positions: config.characters,
+        };
+        
+        // Apply env var overrides and validation
+        state.apply_env_overrides();
+        state.validate_and_clamp();
+        
+        state
+    }
+
+    /// Old load implementation - now converted to profile format
+    pub fn load_old_format() -> Self {
         // Try to load existing config file
         let config_path = Self::config_path();
         if let Ok(contents) = fs::read_to_string(&config_path) {

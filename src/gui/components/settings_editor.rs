@@ -1,7 +1,7 @@
 //! Settings editor component for modifying configuration
 
 use eframe::egui;
-use crate::config::GlobalSettings;
+use crate::config::persistent::GlobalSettings;
 
 // Import constants from parent module
 use super::super::constants::{ITEM_SPACING, SECTION_SPACING};

@@ -19,7 +19,8 @@ use tray_icon::{
 use gtk::glib::ControlFlow;
 
 use super::{components, constants::*};
-use crate::config::PersistentState;
+use crate::config::profile::{Config, Profile};
+use crate::gui::components::profile_selector::{ProfileSelector, ProfileAction};
 
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,8 +73,10 @@ struct ManagerApp {
     tray_rx: Receiver<TrayCommand>,
     should_quit: bool,
     
-    // Configuration state
-    config: PersistentState,
+    // Configuration state with profiles
+    config: Config,
+    selected_profile_idx: usize,
+    profile_selector: ProfileSelector,
     settings_changed: bool,
 }
 
@@ -128,8 +131,14 @@ impl ManagerApp {
             }
         });
 
-        // Load configuration (we'll get screen dimensions from daemon, use defaults for now)
-        let config = PersistentState::load_with_screen(1920, 1080);
+        // Load configuration
+        let config = Config::load().unwrap_or_default();
+        
+        // Find selected profile index
+        let selected_profile_idx = config.profiles
+            .iter()
+            .position(|p| p.name == config.manager.selected_profile)
+            .unwrap_or(0);
 
         #[cfg(target_os = "linux")]
         let mut app = Self {
@@ -140,6 +149,8 @@ impl ManagerApp {
             tray_rx,
             should_quit: false,
             config,
+            selected_profile_idx,
+            profile_selector: ProfileSelector::new(),
             settings_changed: false,
         };
 
@@ -151,6 +162,8 @@ impl ManagerApp {
             status_message: None,
             should_quit: false,
             config,
+            selected_profile_idx,
+            profile_selector: ProfileSelector::new(),
             settings_changed: false,
         };
 
@@ -231,7 +244,14 @@ impl ManagerApp {
     }
 
     fn discard_changes(&mut self) {
-        self.config = PersistentState::load_with_screen(1920, 1080);
+        self.config = Config::load().unwrap_or_default();
+        
+        // Re-find selected profile index after reload
+        self.selected_profile_idx = self.config.profiles
+            .iter()
+            .position(|p| p.name == self.config.manager.selected_profile)
+            .unwrap_or(0);
+        
         self.settings_changed = false;
         self.status_message = Some(StatusMessage {
             text: "Changes discarded".to_string(),
@@ -325,8 +345,36 @@ impl eframe::App for ManagerApp {
             ui.separator();
             ui.add_space(SECTION_SPACING);
 
-            // Settings Editor
-            if components::settings_editor::ui(ui, &mut self.config.global) {
+            // Profile Selector
+            let action = self.profile_selector.ui(
+                ui,
+                &mut self.config,
+                &mut self.selected_profile_idx
+            );
+            
+            match action {
+                ProfileAction::SwitchProfile | ProfileAction::ProfileCreated | ProfileAction::ProfileDeleted => {
+                    // Save config and reload daemon
+                    if let Err(err) = self.save_config() {
+                        error!(error = ?err, "Failed to save config after profile action");
+                        self.status_message = Some(StatusMessage {
+                            text: format!("Save failed: {err}"),
+                            color: STATUS_STOPPED,
+                        });
+                    } else {
+                        self.reload_daemon_config();
+                    }
+                }
+                ProfileAction::None => {}
+            }
+
+            ui.add_space(SECTION_SPACING);
+            ui.separator();
+            ui.add_space(SECTION_SPACING);
+
+            // Visual Settings for selected profile
+            let current_profile = &mut self.config.profiles[self.selected_profile_idx];
+            if components::visual_settings::ui(ui, current_profile) {
                 self.settings_changed = true;
             }
 

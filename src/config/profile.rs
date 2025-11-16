@@ -1,0 +1,216 @@
+//! Profile-based configuration for GUI manager
+//!
+//! New config architecture with support for multiple profiles,
+//! each containing a complete set of visual and behavioral settings.
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use tracing::info;
+
+use crate::types::CharacterSettings;
+
+/// Top-level configuration with profile support
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    #[serde(default)]
+    pub manager: ManagerSettings,
+    #[serde(default)]
+    pub global: GlobalSettingsPhase2,
+    #[serde(default = "default_profiles")]
+    pub profiles: Vec<Profile>,
+    #[serde(rename = "characters", default)]
+    pub characters: HashMap<String, CharacterSettings>,
+}
+
+/// Manager-specific settings (window state, selected profile)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManagerSettings {
+    #[serde(default = "default_profile_name")]
+    pub selected_profile: String,
+    #[serde(default = "default_window_width")]
+    pub window_width: u16,
+    #[serde(default = "default_window_height")]
+    pub window_height: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_x: Option<i16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_y: Option<i16>,
+}
+
+/// Global daemon behavior (applies to all profiles)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlobalSettingsPhase2 {
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+    #[serde(default)]
+    pub minimize_clients_on_switch: bool,
+}
+
+/// Profile - A complete set of visual and behavioral settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Profile {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    
+    // Visual settings
+    #[serde(rename = "opacity_percent")]
+    pub opacity_percent: u8,
+    #[serde(default = "default_border_enabled")]
+    pub border_enabled: bool,
+    pub border_size: u16,
+    #[serde(rename = "border_color")]
+    pub border_color: String,
+    pub text_size: u16,
+    pub text_x: i16,
+    pub text_y: i16,
+    #[serde(rename = "text_foreground")]
+    pub text_foreground: String,
+    #[serde(rename = "text_background")]
+    pub text_background: String,
+    
+    // Behavior settings
+    pub hide_when_no_focus: bool,
+    pub snap_threshold: u16,
+    
+    // Hotkey settings
+    pub hotkey_require_eve_focus: bool,
+    #[serde(default)]
+    pub hotkey_order: Vec<String>,
+}
+
+// Default value functions
+fn default_profile_name() -> String {
+    "default".to_string()
+}
+
+fn default_window_width() -> u16 {
+    600
+}
+
+fn default_window_height() -> u16 {
+    800
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
+fn default_border_enabled() -> bool {
+    true
+}
+
+fn default_profiles() -> Vec<Profile> {
+    vec![Profile {
+        name: "default".to_string(),
+        description: "Default profile".to_string(),
+        opacity_percent: 75,
+        border_enabled: true,
+        border_size: 3,
+        border_color: "#7FFF0000".to_string(),
+        text_size: 22,
+        text_x: 10,
+        text_y: 20,
+        text_foreground: "#FFFFFFFF".to_string(),
+        text_background: "#7F000000".to_string(),
+        hide_when_no_focus: false,
+        snap_threshold: 15,
+        hotkey_require_eve_focus: false,
+        hotkey_order: Vec::new(),
+    }]
+}
+
+impl Default for ManagerSettings {
+    fn default() -> Self {
+        Self {
+            selected_profile: default_profile_name(),
+            window_width: default_window_width(),
+            window_height: default_window_height(),
+            window_x: None,
+            window_y: None,
+        }
+    }
+}
+
+impl Default for GlobalSettingsPhase2 {
+    fn default() -> Self {
+        Self {
+            log_level: default_log_level(),
+            minimize_clients_on_switch: false,
+        }
+    }
+}
+
+impl Profile {
+    /// Create a new profile with default values and the given name
+    pub fn default_with_name(name: String, description: String) -> Self {
+        let mut profile = default_profiles().into_iter().next().unwrap();
+        profile.name = name;
+        profile.description = description;
+        profile
+    }
+}
+
+impl Config {
+    pub fn path() -> PathBuf {
+        let mut path = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+        path.push(crate::constants::config::APP_DIR);
+        path.push(crate::constants::config::FILENAME);
+        path
+    }
+    
+    /// Load configuration from TOML file or create default
+    pub fn load() -> Result<Self> {
+        let config_path = Self::path();
+        
+        if !config_path.exists() {
+            info!("Config file not found, creating default config at {:?}", config_path);
+            let config = Config::default();
+            config.save()?;
+            return Ok(config);
+        }
+        
+        let contents = fs::read_to_string(&config_path)
+            .with_context(|| format!("Failed to read config from {:?}", config_path))?;
+        
+        let config: Config = toml::from_str(&contents)
+            .with_context(|| format!("Failed to parse TOML from {:?}", config_path))?;
+        
+        info!("Loaded config with {} profile(s)", config.profiles.len());
+        Ok(config)
+    }
+    
+    /// Save configuration to TOML file
+    pub fn save(&self) -> Result<()> {
+        let config_path = Self::path();
+        
+        // Ensure config directory exists
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create config directory {:?}", parent))?;
+        }
+        
+        let toml_string = toml::to_string_pretty(self)
+            .context("Failed to serialize config to TOML")?;
+        
+        fs::write(&config_path, toml_string)
+            .with_context(|| format!("Failed to write config to {:?}", config_path))?;
+        
+        info!("Saved config to {:?}", config_path);
+        Ok(())
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            manager: ManagerSettings::default(),
+            global: GlobalSettingsPhase2::default(),
+            profiles: default_profiles(),
+            characters: HashMap::new(),
+        }
+    }
+}
