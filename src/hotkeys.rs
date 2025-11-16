@@ -73,12 +73,14 @@ pub fn spawn_listener(sender: Sender<CycleCommand>) -> Result<Vec<thread::JoinHa
 
 /// Listen for Tab/Shift+Tab events on a single device
 fn listen_for_hotkeys(mut device: Device, sender: Sender<CycleCommand>) -> Result<()> {
-    let mut shift_pressed = false;
-
     loop {
         // Fetch events (blocks until available)
         let events = device.fetch_events()
             .context("Failed to fetch events")?;
+
+        // Collect Tab press events that need processing
+        // We need to finish with the events iterator before querying key state
+        let mut tab_presses = Vec::new();
 
         for event in events {
             // Log all key events for debugging
@@ -96,27 +98,32 @@ fn listen_for_hotkeys(mut device: Device, sender: Sender<CycleCommand>) -> Resul
             if let InputEventKind::Key(key) = event.kind() {
                 let pressed = event.value() == input::KEY_PRESS;
 
-                match key {
-                    Key::KEY_LEFTSHIFT | Key::KEY_RIGHTSHIFT => {
-                        shift_pressed = pressed;
-                        debug!(shift_pressed = pressed, "Shift state changed");
-                    }
-                    Key::KEY_TAB if pressed => {
-                        // Only trigger on key press, not repeat or release
-                        let command = if shift_pressed {
-                            CycleCommand::Backward
-                        } else {
-                            CycleCommand::Forward
-                        };
-
-                        info!(shift = shift_pressed, command = ?command, "Tab hotkey pressed, sending command");
-
-                        sender.send(command)
-                            .context("Failed to send cycle command")?;
-                    }
-                    _ => {}
+                if key == Key::KEY_TAB && pressed {
+                    tab_presses.push(());
                 }
             }
+        }
+
+        // Now process Tab presses with current keyboard state
+        for _ in tab_presses {
+            // Check real-time state of shift keys when Tab was pressed
+            // This avoids race conditions from batched events
+            let key_state = device.get_key_state()
+                .context("Failed to get keyboard state")?;
+            
+            let shift_pressed = key_state.contains(Key::KEY_LEFTSHIFT) 
+                || key_state.contains(Key::KEY_RIGHTSHIFT);
+
+            let command = if shift_pressed {
+                CycleCommand::Backward
+            } else {
+                CycleCommand::Forward
+            };
+
+            info!(shift = shift_pressed, command = ?command, "Tab hotkey pressed, sending command");
+
+            sender.send(command)
+                .context("Failed to send cycle command")?;
         }
     }
 }
