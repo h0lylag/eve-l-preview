@@ -8,6 +8,8 @@ use tracing::{error, info, warn};
 use x11rb::protocol::render::Color;
 
 use crate::color::{HexColor, Opacity};
+use toml_edit::{Document, value, Array};
+use std::str::FromStr;
 use crate::types::{CharacterSettings, Position, TextOffset};
 
 /// Immutable display settings (loaded once at startup)
@@ -290,15 +292,25 @@ impl PersistentState {
                     // Validate and clamp all values to safe ranges
                     state.validate_and_clamp();
                     
-                    // Auto-save if config is missing new fields (e.g., default_width/default_height)
-                    // This ensures existing configs get updated with new options
-                    if !contents.contains("default_width") || !contents.contains("default_height") {
-                        info!("Updating config with new fields (default_width, default_height)");
-                        if let Err(e) = state.save()
-                            .context("Failed to save config after adding new fields") {
-                                error!(error = ?e, "Failed to update config");
-                            }
+                    // Ensure older configs get default fields added (fail softly)
+                    // If fields were missing from the TOML, add defaults to state and save
+                    // so the user's config gets the new key in place for future edits.
+                    let added = state.fill_missing_defaults_from_toml(&contents);
+                    if !added.is_empty() {
+                        // We use toml_edit to add missing defaults without losing comments or key order.
+                        info!(added_keys = ?added, "Added missing default(s) to config file");
+                        let (new_contents, _added_keys) = Self::add_missing_defaults_to_document(&contents, &state);
+                        let config_path = Self::config_path();
+                        match fs::write(config_path, new_contents) {
+                            Ok(_) => (),
+                            Err(e) => error!(error = ?e, "Failed to persist config using toml_edit")
+                        }
                     }
+
+    
+                    
+                    // Older backups for specific missing fields removed: fill_missing_defaults_from_toml
+                    // now handles adding any missing global fields and persists them.
                     
                     return state;
                 }
@@ -476,6 +488,130 @@ impl PersistentState {
         if let Ok(hide) = env::var("HIDE_WHEN_NO_FOCUS") {
             self.global.hide_when_no_focus = hide.parse().unwrap_or(false);
         }
+    }
+
+    /// Detect top-level missing keys in the user's TOML and add defaults into self.
+    /// Returns a Vec of keys that were added (for logging and persistence).
+    ///
+    /// This performs non-destructive edits: it never removes or overwrites existing keys,
+    /// and will call `save()` only when the caller decides to persist the changes.
+    pub fn fill_missing_defaults_from_toml(&mut self, contents: &str) -> Vec<String> {
+        let mut added = Vec::new();
+
+        // Top-level global fields to ensure exist in user config
+        // NOTE: we only add fields that are safe to backfill; per-character tables are left untouched
+        if !contents.contains("opacity_percent") {
+            added.push("opacity_percent".to_string());
+            self.global.opacity_percent = Opacity::from_argb32(0xCC000000).percent();
+        }
+        if !contents.contains("border_size") {
+            added.push("border_size".to_string());
+            self.global.border_size = 5;
+        }
+        if !contents.contains("border_color") {
+            added.push("border_color".to_string());
+            self.global.border_color_hex = HexColor::from_argb32(0xFFFF0000).to_hex_string();
+        }
+        if !contents.contains("text_x") || !contents.contains("text_y") {
+            if !added.contains(&"text_x".to_string()) { added.push("text_x".to_string()); }
+            if !added.contains(&"text_y".to_string()) { added.push("text_y".to_string()); }
+            self.global.text_x = 10;
+            self.global.text_y = 10;
+        }
+        if !contents.contains("text_color") {
+            added.push("text_color".to_string());
+            self.global.text_color_hex = HexColor::from_argb32(0xFF_FF_FF_FF).to_hex_string();
+        }
+        if !contents.contains("text_size") {
+            added.push("text_size".to_string());
+            self.global.text_size = default_text_size();
+        }
+        if !contents.contains("hide_when_no_focus") {
+            added.push("hide_when_no_focus".to_string());
+            self.global.hide_when_no_focus = false;
+        }
+        if !contents.contains("snap_threshold") {
+            added.push("snap_threshold".to_string());
+            self.global.snap_threshold = default_snap_threshold();
+        }
+        if !contents.contains("default_width") {
+            added.push("default_width".to_string());
+            self.global.default_width = default_width();
+        }
+        if !contents.contains("default_height") {
+            added.push("default_height".to_string());
+            self.global.default_height = default_height();
+        }
+        if !contents.contains("hotkey_order") {
+            added.push("hotkey_order".to_string());
+            self.global.hotkey_order = vec![];
+        }
+        if !contents.contains("hotkey_require_eve_focus") {
+            added.push("hotkey_require_eve_focus".to_string());
+            self.global.hotkey_require_eve_focus = default_hotkey_require_eve_focus();
+        }
+
+        added
+    }
+
+    /// Build a TOML document from the provided contents and add any missing keys
+    /// using values from `state`. Returns the updated TOML text plus list of keys
+    /// that were added. This function uses `toml_edit` and preserves comments
+    /// and formatting.
+    pub(crate) fn add_missing_defaults_to_document(contents: &str, state: &PersistentState) -> (String, Vec<String>) {
+        let mut doc = match Document::from_str(contents) {
+            Ok(d) => d,
+            Err(_) => Document::new(),
+        };
+
+        let mut added = Vec::new();
+
+        // Helper macro to add a key only when missing
+        macro_rules! add_if_missing {
+            ($key:expr, $val:expr) => {
+                if !doc.as_table().contains_key($key) {
+                    doc[$key] = value($val);
+                    added.push($key.to_string());
+                }
+            };
+        }
+
+        add_if_missing!("opacity_percent", state.global.opacity_percent as i64);
+        add_if_missing!("border_size", state.global.border_size as i64);
+        add_if_missing!("border_color", state.global.border_color_hex.clone());
+
+        if !doc.as_table().contains_key("text_x") || !doc.as_table().contains_key("text_y") {
+            if !doc.as_table().contains_key("text_x") { doc["text_x"] = value(state.global.text_x as i64); added.push("text_x".to_string()); }
+            if !doc.as_table().contains_key("text_y") { doc["text_y"] = value(state.global.text_y as i64); added.push("text_y".to_string()); }
+        }
+
+        add_if_missing!("text_color", state.global.text_color_hex.clone());
+        // text_size should be float or int depending on value
+        if !doc.as_table().contains_key("text_size") {
+            let v = state.global.text_size;
+            // If whole number, use integer literal
+            if v.fract() == 0.0 {
+                doc["text_size"] = value(v as i64);
+            } else {
+                doc["text_size"] = value(v as f64);
+            }
+            added.push("text_size".to_string());
+        }
+
+        add_if_missing!("hide_when_no_focus", state.global.hide_when_no_focus);
+        add_if_missing!("snap_threshold", state.global.snap_threshold as i64);
+        add_if_missing!("default_width", state.global.default_width as i64);
+        add_if_missing!("default_height", state.global.default_height as i64);
+
+        if !doc.as_table().contains_key("hotkey_order") {
+            let arr = Array::default();
+            doc["hotkey_order"] = value(arr);
+            added.push("hotkey_order".to_string());
+        }
+
+        add_if_missing!("hotkey_require_eve_focus", state.global.hotkey_require_eve_focus);
+
+        (doc.to_string(), added)
     }
 }
 
@@ -675,6 +811,143 @@ mod tests {
         
         // File save will fail in test environment
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_fill_missing_defaults_adds_keys_for_empty_content() {
+        // Start from env-based defaults (simulates a newly created state in memory)
+        let mut state = PersistentState::from_env(None);
+
+        // No keys present in Empty TOML
+        let contents = "".to_string();
+
+        let added = state.fill_missing_defaults_from_toml(&contents);
+        // We expect some keys to be added for minimal config
+        assert!(added.contains(&"default_width".to_string()));
+        assert!(added.contains(&"default_height".to_string()));
+        assert!(added.contains(&"opacity_percent".to_string()));
+    }
+
+    #[test]
+    fn test_fill_missing_defaults_noop_when_all_present() {
+        // Generate a TOML from the default state (all fields present)
+        let state = PersistentState::from_env(None);
+        let contents = toml::to_string_pretty(&state).unwrap();
+
+        let mut loaded = toml::from_str::<PersistentState>(&contents).unwrap();
+        let added = loaded.fill_missing_defaults_from_toml(&contents);
+
+        // Since the serialized TOML contains all keys, nothing should be added
+        assert!(added.is_empty());
+    }
+
+    #[test]
+    fn test_add_missing_defaults_preserves_comments() {
+        let state = PersistentState::from_env(None);
+        let contents = r##"
+# Top level comment
+border_color = "#FF00FF00" # border comment
+text_size = 18
+"##;
+
+        let (doc, added) = PersistentState::add_missing_defaults_to_document(contents, &state);
+
+        // Comments should survive the toml_edit roundtrip
+        assert!(doc.contains("# Top level comment"));
+        assert!(doc.contains("border_color = \"#FF00FF00\""));
+
+        // default_width should be added
+        assert!(added.contains(&"default_width".to_string()));
+        assert!(doc.contains("default_width"));
+    }
+
+    #[test]
+    fn test_add_missing_defaults_idempotent() {
+        let state = PersistentState::from_env(None);
+
+        // First pass adds keys to empty document
+        let (first_doc, first_added) = PersistentState::add_missing_defaults_to_document("", &state);
+        assert!(!first_added.is_empty());
+
+        // A second pass over the newly produced document should be a no-op
+        let (second_doc, second_added) = PersistentState::add_missing_defaults_to_document(&first_doc, &state);
+        assert!(second_added.is_empty());
+
+        // DOM-level comparison: parse both docs and ensure tables/values match
+        let d1 = Document::from_str(&first_doc).expect("first doc parse");
+        let d2 = Document::from_str(&second_doc).expect("second doc parse");
+        assert_eq!(d1.as_table().len(), d2.as_table().len());
+        for (k, v) in d1.as_table().iter() {
+            assert!(d2.as_table().contains_key(k));
+            assert_eq!(v.to_string(), d2[k].to_string());
+        }
+    }
+
+    #[test]
+    fn test_existing_hotkey_order_preserved() {
+        let state = PersistentState::from_env(None);
+        // If user already has a hotkey_order array, it should not be replaced
+        let contents = r#"hotkey_order = ["a"]"#;
+
+        let (doc, added) = PersistentState::add_missing_defaults_to_document(contents, &state);
+
+        assert!(!added.contains(&"hotkey_order".to_string()));
+        // Ensure the array is still present and intact
+        assert!(doc.contains("hotkey_order"));
+        assert!(doc.contains("\"a\""));
+
+        // Parse back into a toml_edit::Document and check the array length / value
+        let parsed = Document::from_str(&doc).expect("doc should parse");
+        let arr = parsed["hotkey_order"].as_array().expect("hotkey_order should be array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr.get(0).and_then(|v| v.as_str()), Some("a"));
+    }
+
+    #[test]
+    fn test_add_missing_defaults_preserves_inline_comments() {
+        let state = PersistentState::from_env(None);
+        let contents = r##"border_size = 3 # inline border size comment"##;
+
+        let (doc, _added) = PersistentState::add_missing_defaults_to_document(contents, &state);
+
+        // Inline comments attached to existing keys should survive
+        assert!(doc.contains("# inline border size comment"));
+    }
+
+    #[test]
+    fn test_dom_idempotence_with_nested_tables() {
+        let state = PersistentState::from_env(None);
+
+        let contents = r##"
+        [characters]
+        [characters."Alice"]
+        width = 480
+        height = 270
+        # comment for nested values
+        "##;
+
+        // First pass - should add global defaults but not touch existing nested table
+        let (first_doc, first_added) = PersistentState::add_missing_defaults_to_document(contents, &state);
+        assert!(!first_added.is_empty(), "expected some global defaults to be added");
+
+        // Second pass should be a no-op, compare DOM-level structures
+        let (second_doc, second_added) = PersistentState::add_missing_defaults_to_document(&first_doc, &state);
+        assert!(second_added.is_empty(), "expected no keys to be added on second pass");
+
+        let parsed1 = Document::from_str(&first_doc).expect("parse first");
+        let parsed2 = Document::from_str(&second_doc).expect("parse second");
+
+        // Structures should be identical at the root
+        assert_eq!(parsed1.as_table().len(), parsed2.as_table().len());
+
+        // Ensure the nested table and values are preserved
+        assert!(parsed1.as_table().contains_key("characters"));
+        assert!(parsed1["characters"].as_table().unwrap().contains_key("Alice"));
+        assert_eq!(parsed1["characters"]["Alice"]["width"].as_integer(), Some(480));
+        assert_eq!(parsed1["characters"]["Alice"]["height"].as_integer(), Some(270));
+
+        // Confirm comment preserved (string-level is acceptable here)
+        assert!(first_doc.contains("# comment for nested values"));
     }
 
     #[test]
