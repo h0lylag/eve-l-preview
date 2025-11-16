@@ -207,11 +207,24 @@ fn handle_motion_notify(
     eves: &mut HashMap<Window, Thumbnail>,
     event: MotionNotifyEvent,
 ) -> Result<()> {
-    // Build list of other thumbnails for snapping (query actual positions)
     trace!(x = event.root_x, y = event.root_y, "MotionNotify received");
+    
+    // Find the dragging thumbnail (typically only one at a time)
+    let dragging_window = eves.iter()
+        .find(|(_, t)| t.input_state.dragging)
+        .map(|(win, _)| *win);
+    
+    let Some(dragging_window) = dragging_window else {
+        return Ok(());  // No thumbnail is being dragged
+    };
+    
+    let snap_threshold = persistent_state.global.snap_threshold;
+    
+    // Collect snap targets only for the dragging window
+    // Still need Vec here for snapping::find_snap_position API, but only when actually dragging
     let others: Vec<_> = eves
         .iter()
-        .filter(|(_, t)| !t.input_state.dragging && t.state.is_visible())
+        .filter(|(win, t)| **win != dragging_window && t.state.is_visible())
         .filter_map(|(win, t)| {
             ctx.conn.get_geometry(t.window).ok()
                 .and_then(|req| req.reply().ok())
@@ -224,20 +237,18 @@ fn handle_motion_notify(
         })
         .collect();
     
-    let snap_threshold = persistent_state.global.snap_threshold;
+    // Handle drag for the dragging thumbnail
+    let thumbnail = eves.get_mut(&dragging_window).unwrap();
+    handle_drag_motion(
+        thumbnail,
+        &event,
+        &others,
+        thumbnail.dimensions.width,
+        thumbnail.dimensions.height,
+        snap_threshold,
+    )
+    .context(format!("Failed to handle drag motion for '{}'", thumbnail.character_name))?;
     
-    // Handle drag for all thumbnails (mutable pass)
-    for thumbnail in eves.values_mut() {
-        handle_drag_motion(
-            thumbnail,
-            &event,
-            &others,
-            thumbnail.dimensions.width,
-            thumbnail.dimensions.height,
-            snap_threshold,
-        )
-        .context(format!("Failed to handle drag motion for '{}'", thumbnail.character_name))?;
-    }
     Ok(())
 }
 

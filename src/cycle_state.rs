@@ -71,7 +71,7 @@ impl CycleState {
     /// Move to next character in config order (Tab)
     /// Returns (window, character_name) to activate, or None if no active characters
     /// Only cycles through characters in the configured hotkey_order list
-    pub fn cycle_forward(&mut self) -> Option<(Window, String)> {
+    pub fn cycle_forward(&mut self) -> Option<(Window, &str)> {
         if self.active_windows.is_empty() {
             warn!(active_windows = self.active_windows.len(), "No active windows to cycle");
             return None;
@@ -90,7 +90,7 @@ impl CycleState {
             let character_name = &self.config_order[self.current_index];
             if let Some(&window) = self.active_windows.get(character_name) {
                 debug!(character = %character_name, index = self.current_index, "Cycling forward to character");
-                return Some((window, character_name.clone()));
+                return Some((window, character_name.as_str()));
             }
 
             // Wrapped around without finding active character
@@ -104,7 +104,7 @@ impl CycleState {
     /// Move to previous character in config order (Shift+Tab)
     /// Returns (window, character_name) to activate, or None if no active characters
     /// Only cycles through characters in the configured hotkey_order list
-    pub fn cycle_backward(&mut self) -> Option<(Window, String)> {
+    pub fn cycle_backward(&mut self) -> Option<(Window, &str)> {
         if self.active_windows.is_empty() {
             warn!(active_windows = self.active_windows.len(), "No active windows to cycle");
             return None;
@@ -127,7 +127,7 @@ impl CycleState {
             let character_name = &self.config_order[self.current_index];
             if let Some(&window) = self.active_windows.get(character_name) {
                 debug!(character = %character_name, index = self.current_index, "Cycling backward to character");
-                return Some((window, character_name.clone()));
+                return Some((window, character_name.as_str()));
             }
 
             // Wrapped around without finding active character
@@ -181,9 +181,9 @@ mod tests {
         state.add_window("Char3".to_string(), 300);
 
         // Start at index 0 (Char1)
-        assert_eq!(state.cycle_forward(), Some((200, "Char2".to_string()))); // → Char2
-        assert_eq!(state.cycle_forward(), Some((300, "Char3".to_string()))); // → Char3
-        assert_eq!(state.cycle_forward(), Some((100, "Char1".to_string()))); // → Char1 (wrap)
+        assert_eq!(state.cycle_forward(), Some((200, "Char2"))); // → Char2
+        assert_eq!(state.cycle_forward(), Some((300, "Char3"))); // → Char3
+        assert_eq!(state.cycle_forward(), Some((100, "Char1"))); // → Char1 (wrap)
     }
 
     #[test]
@@ -199,9 +199,9 @@ mod tests {
         state.add_window("Char3".to_string(), 300);
 
         // Start at index 0 (Char1)
-        assert_eq!(state.cycle_backward(), Some((300, "Char3".to_string()))); // ← Char3 (wrap)
-        assert_eq!(state.cycle_backward(), Some((200, "Char2".to_string()))); // ← Char2
-        assert_eq!(state.cycle_backward(), Some((100, "Char1".to_string()))); // ← Char1
+        assert_eq!(state.cycle_backward(), Some((300, "Char3"))); // ← Char3 (wrap)
+        assert_eq!(state.cycle_backward(), Some((200, "Char2"))); // ← Char2
+        assert_eq!(state.cycle_backward(), Some((100, "Char1"))); // ← Char1
     }
 
     #[test]
@@ -212,7 +212,7 @@ mod tests {
         state.add_window("Char2".to_string(), 200);
 
         assert!(state.set_current("Char2"));
-        assert_eq!(state.cycle_forward(), Some((100, "Char1".to_string()))); // Next after Char2 is Char1
+        assert_eq!(state.cycle_forward(), Some((100, "Char1"))); // Next after Char2 is Char1
     }
 
     #[test]
@@ -228,8 +228,8 @@ mod tests {
         // "Inactive" not added
 
         // Should skip "Inactive" in cycle
-        assert_eq!(state.cycle_forward(), Some((300, "Active2".to_string()))); // Active1 → Active2
-        assert_eq!(state.cycle_forward(), Some((100, "Active1".to_string()))); // Active2 → Active1 (wrap, skip Inactive)
+        assert_eq!(state.cycle_forward(), Some((300, "Active2"))); // Active1 → Active2
+        assert_eq!(state.cycle_forward(), Some((100, "Active1"))); // Active2 → Active1 (wrap, skip Inactive)
     }
 
     #[test]
@@ -243,7 +243,7 @@ mod tests {
         state.remove_window(200); // Remove current character
 
         // Index should be clamped and cycle should still work
-        assert_eq!(state.cycle_forward(), Some((100, "Char1".to_string())));
+        assert_eq!(state.cycle_forward(), Some((100, "Char1")));
     }
 
     #[test]
@@ -266,8 +266,8 @@ mod tests {
         assert!(!state.config_order.contains(&"NewChar".to_string()));
         
         // Cycling should skip NewChar
-        assert_eq!(state.cycle_forward(), Some((100, "Char1".to_string())));
-        assert_eq!(state.cycle_forward(), Some((100, "Char1".to_string()))); // Still Char1
+        assert_eq!(state.cycle_forward(), Some((100, "Char1")));
+        assert_eq!(state.cycle_forward(), Some((100, "Char1"))); // Still Char1
     }
 
     #[test]
