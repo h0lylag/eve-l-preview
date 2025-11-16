@@ -90,12 +90,23 @@ impl<'a> Thumbnail<'a> {
         Ok(window)
     }
 
-    /// Setup window properties (opacity, WM_CLASS, always-on-top)
+    /// Setup window properties (opacity, WM_CLASS, always-on-top, PID)
     fn setup_window_properties(
         ctx: &AppContext,
         window: Window,
         character_name: &str,
     ) -> Result<()> {
+        // Set PID so we can identify our own thumbnail windows
+        let pid = std::process::id();
+        ctx.conn.change_property32(
+            PropMode::REPLACE,
+            window,
+            ctx.atoms.net_wm_pid,
+            AtomEnum::CARDINAL,
+            &[pid],
+        )
+        .context(format!("Failed to set _NET_WM_PID for '{}'", character_name))?;
+
         // Set opacity
         let opacity_atom = ctx.conn
             .intern_atom(false, b"_NET_WM_WINDOW_OPACITY")

@@ -51,6 +51,12 @@ fn check_and_create_window<'a>(
         if !prop.value.is_empty() {
             let pid = u32::from_ne_bytes(prop.value[0..constants::x11::PID_PROPERTY_SIZE].try_into()
                 .context("Invalid PID property format (expected 4 bytes)")?);
+            
+            // Skip our own thumbnail windows
+            if pid == std::process::id() {
+                return Ok(None);
+            }
+            
             if !std::fs::read_link(format!("{}", paths::PROC_EXE_FORMAT.replace("{}", &pid.to_string())))
                 .map(|x| {
                     x.to_string_lossy().contains(wine::WINE64_PRELOADER)
