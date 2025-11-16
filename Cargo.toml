@@ -23,8 +23,11 @@ clap = { version = "4.5", features = ["derive"] }
 
 eframe = { version = "0.30", default-features = false, features = ["glow", "wayland", "x11"] }
 egui = "0.30"
-tray-item = { version = "0.10", features = ["ksni"] }  # System tray with ksni backend
+tray-icon = "0.17"  # System tray support
 png = "0.17"  # PNG decoding for tray icon
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"  # GTK for tray-icon on Linux
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"

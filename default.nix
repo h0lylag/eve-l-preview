@@ -14,10 +14,9 @@ let
       xorg.libXcursor
       xorg.libXrandr
       xorg.libXi
-      vulkan-loader
       gtk3
       libappindicator
-      libappindicator-gtk3
+      xdotool
     ];
 in
 pkgs.rustPlatform.buildRustPackage rec {
@@ -44,9 +43,9 @@ pkgs.rustPlatform.buildRustPackage rec {
     xorg.libXcursor
     xorg.libXrandr
     xorg.libXi
-    vulkan-loader
     gtk3
     libappindicator
+    xdotool
   ];
 
   # Set LD_LIBRARY_PATH so winit can find libraries at runtime
