@@ -21,8 +21,6 @@ pub struct Config {
     pub global: GlobalSettingsPhase2,
     #[serde(default = "default_profiles")]
     pub profiles: Vec<Profile>,
-    #[serde(rename = "characters", default)]
-    pub characters: HashMap<String, CharacterSettings>,
 }
 
 /// Manager-specific settings (window state, selected profile)
@@ -79,7 +77,11 @@ pub struct Profile {
     // Hotkey settings
     pub hotkey_require_eve_focus: bool,
     #[serde(default)]
-    pub hotkey_order: Vec<String>,
+    pub cycle_group: Vec<String>,
+    
+    // Per-profile character positions and dimensions
+    #[serde(rename = "characters", default)]
+    pub character_positions: HashMap<String, CharacterSettings>,
 }
 
 // Default value functions
@@ -119,7 +121,8 @@ fn default_profiles() -> Vec<Profile> {
         hide_when_no_focus: false,
         snap_threshold: 15,
         hotkey_require_eve_focus: false,
-        hotkey_order: Vec::new(),
+        cycle_group: Vec::new(),
+        character_positions: HashMap::new(),
     }]
 }
 
@@ -210,7 +213,6 @@ impl Default for Config {
             manager: ManagerSettings::default(),
             global: GlobalSettingsPhase2::default(),
             profiles: default_profiles(),
-            characters: HashMap::new(),
         }
     }
 }

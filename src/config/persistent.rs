@@ -319,13 +319,13 @@ impl PersistentState {
             snap_threshold: profile.snap_threshold,
             default_width: default_width(),
             default_height: default_height(),
-            hotkey_order: profile.hotkey_order.clone(),
+            hotkey_order: profile.cycle_group.clone(),
             hotkey_require_eve_focus: profile.hotkey_require_eve_focus,
         };
         
         let mut state = PersistentState {
             global,
-            character_positions: config.characters,
+            character_positions: profile.character_positions.clone(),
         };
         
         // Apply env var overrides and validation
