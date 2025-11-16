@@ -12,6 +12,15 @@ use tracing::info;
 
 use crate::types::CharacterSettings;
 
+/// Strategy for saving configuration files
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveStrategy {
+    /// Preserve character_positions entries already on disk (GUI edits)
+    PreserveCharacterPositions,
+    /// Overwrite character_positions with in-memory data (daemon updates)
+    OverwriteCharacterPositions,
+}
+
 /// Top-level configuration with profile support
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -80,7 +89,8 @@ pub struct Profile {
     pub cycle_group: Vec<String>,
     
     // Per-profile character positions and dimensions
-    #[serde(rename = "characters", default)]
+    // Skip serializing if empty to avoid creating empty [profiles.characters] table
+    #[serde(rename = "characters", default, skip_serializing_if = "HashMap::is_empty")]
     pub character_positions: HashMap<String, CharacterSettings>,
 }
 
@@ -186,8 +196,8 @@ impl Config {
         Ok(config)
     }
     
-    /// Save configuration to TOML file
-    pub fn save(&self) -> Result<()> {
+    /// Save configuration to TOML file using chosen strategy
+    pub fn save_with_strategy(&self, strategy: SaveStrategy) -> Result<()> {
         let config_path = Self::path();
         
         // Ensure config directory exists
@@ -196,7 +206,28 @@ impl Config {
                 .with_context(|| format!("Failed to create config directory {:?}", parent))?;
         }
         
-        let toml_string = toml::to_string_pretty(self)
+        let config_to_save = match strategy {
+            SaveStrategy::PreserveCharacterPositions => {
+                let mut clone = self.clone();
+                if config_path.exists() {
+                    if let Ok(contents) = fs::read_to_string(&config_path) {
+                        if let Ok(existing_config) = toml::from_str::<Config>(&contents) {
+                            for profile_to_save in clone.profiles.iter_mut() {
+                                if let Some(existing_profile) = existing_config.profiles.iter()
+                                    .find(|p| p.name == profile_to_save.name)
+                                {
+                                    profile_to_save.character_positions = existing_profile.character_positions.clone();
+                                }
+                            }
+                        }
+                    }
+                }
+                clone
+            }
+            SaveStrategy::OverwriteCharacterPositions => self.clone(),
+        };
+        
+        let toml_string = toml::to_string_pretty(&config_to_save)
             .context("Failed to serialize config to TOML")?;
         
         fs::write(&config_path, toml_string)
@@ -204,6 +235,11 @@ impl Config {
         
         info!("Saved config to {:?}", config_path);
         Ok(())
+    }
+
+    /// Convenience helper: save preserving character positions (GUI default)
+    pub fn save(&self) -> Result<()> {
+        self.save_with_strategy(SaveStrategy::PreserveCharacterPositions)
     }
 }
 

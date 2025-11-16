@@ -9,4 +9,4 @@ pub mod profile;
 
 // Re-export commonly used types
 pub use persistent::{DisplayConfig, GlobalSettings, PersistentState};
-pub use profile::{Config, GlobalSettingsPhase2, ManagerSettings, Profile};
+pub use profile::{Config, GlobalSettingsPhase2, ManagerSettings, Profile, SaveStrategy};

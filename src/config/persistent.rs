@@ -13,6 +13,7 @@ use tracing::{error, info, warn};
 use x11rb::protocol::render::Color;
 
 use crate::color::{HexColor, Opacity};
+use crate::config::profile::SaveStrategy;
 use toml_edit::{Document, value, Array};
 use std::str::FromStr;
 use crate::types::{CharacterSettings, Position, TextOffset};
@@ -405,6 +406,8 @@ impl PersistentState {
         Self::load()
     }
 
+    /// Save character positions to the profile config
+    /// This only updates character_positions, preserving all other profile settings
     pub fn save(&self) -> Result<()> {
         // Load the profile-based config
         let config_path = Self::config_path();
@@ -416,17 +419,22 @@ impl PersistentState {
             crate::config::profile::Config::default()
         };
         
-        // Update character positions in the selected profile
-        let profile = profile_config.profiles
-            .iter_mut()
-            .find(|p| p.name == profile_config.manager.selected_profile)
-            .or_else(|| profile_config.profiles.first_mut())
-            .expect("Config must have at least one profile");
+        // Update ONLY character positions in the selected profile
+        // Preserve all other settings (they come from GUI)
+        let selected_name = profile_config.manager.selected_profile.clone();
+        let profile_idx = profile_config.profiles
+            .iter()
+            .position(|p| p.name == selected_name)
+            .unwrap_or(0);
         
-        profile.character_positions = self.character_positions.clone();
+        // Merge character positions: keep existing positions, add/update only those we have
+        let profile_positions = &mut profile_config.profiles[profile_idx].character_positions;
+        for (char_name, char_settings) in &self.character_positions {
+            profile_positions.insert(char_name.clone(), char_settings.clone());
+        }
         
-        // Save the updated profile config
-        profile_config.save()
+        // Save the updated profile config (daemon owns character positions)
+        profile_config.save_with_strategy(SaveStrategy::OverwriteCharacterPositions)
     }
 
     /// Update position and dimensions after drag - saves to character_positions and persists
