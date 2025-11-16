@@ -2,19 +2,30 @@
 
 use std::io::Cursor;
 use std::process::{Child, Command};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
-use eframe::{egui, CreationContext, NativeOptions};
+use eframe::{egui, NativeOptions};
 use tracing::{error, info, warn};
+
+#[cfg(target_os = "linux")]
 use tray_icon::{
-    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuEvent, MenuItem, MenuId, PredefinedMenuItem},
     Icon, TrayIconBuilder,
 };
 
+#[cfg(target_os = "linux")]
+use gtk::glib::ControlFlow;
+
 use super::constants::*;
 
-
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrayCommand {
+    Reload,
+    Quit,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DaemonStatus {
@@ -52,59 +63,83 @@ struct StatusMessage {
 }
 
 struct ManagerApp {
-    quit_menu_id: tray_icon::menu::MenuId,
     daemon: Option<Child>,
     daemon_status: DaemonStatus,
     last_health_check: Instant,
     status_message: Option<StatusMessage>,
-    allow_close: bool,
+    #[cfg(target_os = "linux")]
+    tray_rx: Receiver<TrayCommand>,
+    should_quit: bool,
 }
 
 impl ManagerApp {
-    fn new(_cc: &CreationContext<'_>) -> Self {
+    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         info!("Initializing egui manager");
 
-        // Spawn GTK thread for tray icon on Linux (egui uses winit, not GTK)
-        // On Linux, we need a separate GTK event loop for the tray icon
+        // Create channel for tray icon commands
         #[cfg(target_os = "linux")]
-        let quit_menu_id = {
-            let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                if let Err(err) = gtk::init() {
-                    error!(error = ?err, "Failed to initialize GTK for tray icon");
-                    return;
-                }
-                
-                match create_tray_icon() {
-                    Ok((tray_icon, quit_id)) => {
-                        info!("Tray icon initialized in GTK thread");
-                        let _ = tx.send(quit_id);
-                        // Keep tray_icon alive by moving it into a leaked Box
-                        // This prevents it from being dropped when the thread continues
-                        Box::leak(Box::new(tray_icon));
-                        gtk::main();
-                    }
-                    Err(err) => {
-                        error!(error = ?err, "Failed to create tray icon in GTK thread");
-                    }
-                }
-            });
+        let (tray_tx, tray_rx) = mpsc::channel();
+
+        // Spawn GTK thread for tray icon on Linux
+        // GTK must run in its own thread because it conflicts with eframe's event loop
+        #[cfg(target_os = "linux")]
+        std::thread::spawn(move || {
+            if let Err(e) = gtk::init() {
+                error!(error = ?e, "Failed to initialize GTK for tray icon");
+                return;
+            }
             
-            // Wait briefly for tray creation, or use dummy ID
-            rx.recv_timeout(Duration::from_millis(500))
-                .unwrap_or_else(|_| MenuItem::new("", true, None).id().clone())
-        };
+            match create_tray_icon(tray_tx.clone()) {
+                Ok(tray_icon) => {
+                    info!("Tray icon created in GTK thread");
+                    
+                    // Set up menu event listener
+                    let menu_channel = MenuEvent::receiver();
+                    let tx = tray_tx;
+                    
+                    // Poll for menu events in GTK thread
+                    gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
+                        if let Ok(event) = menu_channel.try_recv() {
+                            let id = event.id.0;
+                            info!(menu_id = %id, "Tray menu event received");
+                            
+                            if id == "reload" {
+                                let _ = tx.send(TrayCommand::Reload);
+                            } else if id == "quit" {
+                                let _ = tx.send(TrayCommand::Quit);
+                            }
+                        }
+                        ControlFlow::Continue
+                    });
+                    
+                    // Keep tray_icon alive by moving it into a leaked Box
+                    // This prevents it from being dropped when the thread continues
+                    Box::leak(Box::new(tray_icon));
+                    gtk::main();
+                }
+                Err(e) => {
+                    error!(error = ?e, "Failed to create tray icon");
+                }
+            }
+        });
 
-        #[cfg(not(target_os = "linux"))]
-        let quit_menu_id = MenuItem::new("", true, None).id().clone();
-
+        #[cfg(target_os = "linux")]
         let mut app = Self {
-            quit_menu_id,
             daemon: None,
             daemon_status: DaemonStatus::Stopped,
             last_health_check: Instant::now(),
             status_message: None,
-            allow_close: false,
+            tray_rx,
+            should_quit: false,
+        };
+
+        #[cfg(not(target_os = "linux"))]
+        let mut app = Self {
+            daemon: None,
+            daemon_status: DaemonStatus::Stopped,
+            last_health_check: Instant::now(),
+            status_message: None,
+            should_quit: false,
         };
 
         if let Err(err) = app.start_daemon() {
@@ -204,12 +239,18 @@ impl ManagerApp {
         }
     }
 
-    fn process_tray_events(&mut self, ctx: &egui::Context) {
-        if let Ok(MenuEvent { id }) = MenuEvent::receiver().try_recv() {
-            if id == self.quit_menu_id {
-                info!("Quit requested from tray menu");
-                self.allow_close = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    fn poll_tray_events(&mut self) {
+        #[cfg(target_os = "linux")]
+        while let Ok(cmd) = self.tray_rx.try_recv() {
+            match cmd {
+                TrayCommand::Reload => {
+                    info!("Reload requested from tray menu");
+                    self.restart_daemon();
+                }
+                TrayCommand::Quit => {
+                    info!("Quit requested from tray menu");
+                    self.should_quit = true;
+                }
             }
         }
     }
@@ -217,12 +258,18 @@ impl ManagerApp {
 
 impl eframe::App for ManagerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.process_tray_events(ctx);
         self.poll_daemon();
+        self.poll_tray_events();
+
+        // Handle quit request from tray menu
+        if self.should_quit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(PADDING);
-            ui.heading("EVE-L Preview Manager");
+            ui.heading("EVE-L-Preview Manager");
             ui.add_space(SECTION_SPACING);
 
             ui.group(|ui| {
@@ -275,14 +322,22 @@ fn spawn_preview_daemon() -> Result<Child> {
         .context("Failed to spawn preview daemon")
 }
 
-fn create_tray_icon() -> Result<(tray_icon::TrayIcon, tray_icon::menu::MenuId)> {
+#[cfg(target_os = "linux")]
+fn create_tray_icon(_tray_tx: Sender<TrayCommand>) -> Result<tray_icon::TrayIcon> {
     let icon = load_tray_icon()?;
 
-    // Build simple menu with just Quit
+    // Build menu with Reload and Quit options
     let menu = Menu::new();
-    let quit_item = MenuItem::new("Quit", true, None);
-    let quit_id = quit_item.id().clone();
+    let status_item = MenuItem::new("EVE-L Preview Running", false, None);
+    let reload_item = MenuItem::with_id(MenuId::new("reload"), "Reload", true, None);
+    let quit_item = MenuItem::with_id(MenuId::new("quit"), "Quit", true, None);
     
+    menu.append(&status_item)
+        .context("Failed to append status menu item")?;
+    menu.append(&PredefinedMenuItem::separator())
+        .context("Failed to append separator")?;
+    menu.append(&reload_item)
+        .context("Failed to append reload menu item")?;
     menu.append(&quit_item)
         .context("Failed to append quit menu item")?;
 
@@ -296,9 +351,10 @@ fn create_tray_icon() -> Result<(tray_icon::TrayIcon, tray_icon::menu::MenuId)> 
 
     info!("Tray icon created");
 
-    Ok((tray_icon, quit_id))
+    Ok(tray_icon)
 }
 
+#[cfg(target_os = "linux")]
 fn load_tray_icon() -> Result<Icon> {
     let icon_bytes = include_bytes!("../../assets/tray-icon.png");
     let decoder = png::Decoder::new(Cursor::new(icon_bytes));
