@@ -202,6 +202,11 @@ impl ManagerApp {
         }
     }
 
+    fn reload_daemon_config(&mut self) {
+        info!("Config reload requested - restarting daemon");
+        self.restart_daemon();
+    }
+
     fn poll_daemon(&mut self) {
         if self.last_health_check.elapsed() < Duration::from_millis(DAEMON_CHECK_INTERVAL_MS) {
             return;
@@ -245,7 +250,7 @@ impl ManagerApp {
             match cmd {
                 TrayCommand::Reload => {
                     info!("Reload requested from tray menu");
-                    self.restart_daemon();
+                    self.reload_daemon_config();
                 }
                 TrayCommand::Quit => {
                     info!("Quit requested from tray menu");
@@ -280,14 +285,6 @@ impl eframe::App for ManagerApp {
                 }
                 if let Some(message) = &self.status_message {
                     ui.colored_label(message.color, &message.text);
-                }
-            });
-
-            ui.add_space(SECTION_SPACING);
-
-            ui.horizontal(|ui| {
-                if ui.button("\u{1F504} Restart Preview").clicked() {
-                    self.restart_daemon();
                 }
             });
 

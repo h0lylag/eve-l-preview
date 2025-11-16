@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::sync::{mpsc, Arc};
+use std::sync::mpsc;
 use tracing::{error, info, warn};
 use x11rb::connection::Connection;
 use x11rb::protocol::damage::ConnectionExt as DamageExt;
@@ -14,8 +14,6 @@ use crate::cycle_state::CycleState;
 use crate::event_handler::handle_event;
 use crate::font;
 use crate::hotkeys::{self, spawn_listener, CycleCommand};
-use signal_hook::{consts::SIGHUP, iterator::Signals};
-use std::sync::atomic::{AtomicBool, Ordering};
 use crate::persistence::SavedState;
 use crate::thumbnail::Thumbnail;
 use crate::types::Dimensions;
@@ -246,22 +244,6 @@ pub fn run_preview_daemon() -> Result<()> {
         font_renderer: &font_renderer,
     };
 
-    // Setup SIGHUP handling so external tools can trigger a config reload
-    // (e.g., manager sends SIGHUP after writing config). We set an AtomicBool
-    // when SIGHUP is received and check it in the main loop to perform a
-    // non-blocking reload without interrupting X11 event processing.
-    let reload_flag = Arc::new(AtomicBool::new(false));
-    let rf = reload_flag.clone();
-    let mut signals = Signals::new(&[SIGHUP])?;
-    std::thread::spawn(move || {
-        for sig in signals.forever() {
-            if sig == SIGHUP {
-                info!("Received SIGHUP signal - scheduling config reload");
-                rf.store(true, Ordering::Relaxed);
-            }
-        }
-    });
-
     let mut eves = get_eves(&ctx, &persistent_state, &session_state)
         .context("Failed to get initial list of EVE windows")?;
     
@@ -311,17 +293,6 @@ pub fn run_preview_daemon() -> Result<()> {
             } else {
                 info!(hotkey_require_eve_focus = persistent_state.global.hotkey_require_eve_focus, "Hotkey ignored, EVE window not focused (hotkey_require_eve_focus enabled)");
             }
-        }
-
-        // Check for SIGHUP-config-reload set by signal handler thread
-        // TODO: Implement hot reload - need to handle borrowed config in thumbnails
-        if reload_flag.swap(false, Ordering::Relaxed) {
-            info!("Received SIGHUP - config reload requested but not yet implemented");
-            // To implement: clear eves HashMap, rebuild config, rebuild ctx, recreate thumbnails
-            // persistent_state = PersistentState::load_with_screen(
-            //     screen.width_in_pixels,
-            //     screen.height_in_pixels,
-            // );
         }
 
         let event = conn.wait_for_event()
