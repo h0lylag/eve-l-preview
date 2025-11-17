@@ -50,6 +50,17 @@ fn handle_create_notify<'a>(
         .context(format!("Failed to check/create window for new window {}", event.window))? {
         // Register with cycle state
         info!(window = event.window, character = %thumbnail.character_name, "Created thumbnail for new EVE window");
+        
+        // Save initial position and dimensions for new character
+        persistent_state.update_position(
+            &thumbnail.character_name,
+            thumbnail.position.x,
+            thumbnail.position.y,
+            thumbnail.dimensions.width,
+            thumbnail.dimensions.height,
+        )
+        .context(format!("Failed to save initial position for new character '{}'", thumbnail.character_name))?;
+        
         cycle_state.add_window(thumbnail.character_name.clone(), event.window);
         eves.insert(event.window, thumbnail);
     }
@@ -393,6 +404,17 @@ pub fn handle_event<'a>(
                     .context(format!("Failed to create thumbnail for newly detected EVE window {}", event.window))?
             {
                 // New EVE window detected
+                
+                // Save initial position and dimensions for new character
+                persistent_state.update_position(
+                    &thumbnail.character_name,
+                    thumbnail.position.x,
+                    thumbnail.position.y,
+                    thumbnail.dimensions.width,
+                    thumbnail.dimensions.height,
+                )
+                .context(format!("Failed to save initial position for newly detected character '{}'", thumbnail.character_name))?;
+                
                 cycle_state.add_window(thumbnail.character_name.clone(), event.window);
                 eves.insert(event.window, thumbnail);
             } else if event.atom == ctx.atoms.net_wm_state

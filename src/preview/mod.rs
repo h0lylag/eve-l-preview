@@ -173,6 +173,17 @@ fn get_eves<'a>(
     for w in windows {
         if let Some(eve) = check_and_create_window(ctx, persistent_state, w, state)
             .context(format!("Failed to process window {} during initial scan", w))? {
+            
+            // Save initial position and dimensions (important for first-time characters)
+            persistent_state.update_position(
+                &eve.character_name,
+                eve.position.x,
+                eve.position.y,
+                eve.dimensions.width,
+                eve.dimensions.height,
+            )
+            .context(format!("Failed to save initial position during scan for '{}'", eve.character_name))?;
+            
             eves.insert(w, eve);
         }
     }
