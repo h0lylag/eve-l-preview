@@ -78,6 +78,7 @@ struct ManagerApp {
     selected_profile_idx: usize,
     profile_selector: ProfileSelector,
     hotkey_settings_state: components::hotkey_settings::HotkeySettingsState,
+    visual_settings_state: components::visual_settings::VisualSettingsState,
     settings_changed: bool,
     
     // UI state
@@ -163,6 +164,9 @@ impl ManagerApp {
         // Initialize hotkey settings state with current profile
         let mut hotkey_settings_state = components::hotkey_settings::HotkeySettingsState::default();
         hotkey_settings_state.load_from_profile(&config.profiles[selected_profile_idx]);
+        
+        // Initialize visual settings state
+        let visual_settings_state = components::visual_settings::VisualSettingsState::default();
 
         #[cfg(target_os = "linux")]
         let mut app = Self {
@@ -176,6 +180,7 @@ impl ManagerApp {
             selected_profile_idx,
             profile_selector: ProfileSelector::new(),
             hotkey_settings_state,
+            visual_settings_state,
             settings_changed: false,
             active_tab: ActiveTab::GlobalSettings,
         };
@@ -191,6 +196,7 @@ impl ManagerApp {
             selected_profile_idx,
             profile_selector: ProfileSelector::new(),
             hotkey_settings_state,
+            visual_settings_state,
             settings_changed: false,
             active_tab: ActiveTab::GlobalSettings,
         };
@@ -397,7 +403,7 @@ impl ManagerApp {
         
         ui.columns(2, |columns| {
             // Left column: Visual Settings
-            if components::visual_settings::ui(&mut columns[0], current_profile) {
+            if components::visual_settings::ui(&mut columns[0], current_profile, &mut self.visual_settings_state) {
                 self.settings_changed = true;
             }
             
