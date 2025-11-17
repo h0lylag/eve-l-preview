@@ -158,7 +158,7 @@ impl ManagerApp {
         // Find selected profile index
         let selected_profile_idx = config.profiles
             .iter()
-            .position(|p| p.name == config.manager.selected_profile)
+            .position(|p| p.name == config.global.selected_profile)
             .unwrap_or(0);
 
         // Initialize hotkey settings state with current profile
@@ -301,8 +301,7 @@ impl ManagerApp {
             }
         }
         
-        // Copy manager and global settings from GUI
-        disk_config.manager = self.config.manager.clone();
+        // Copy global settings from GUI
         disk_config.global = self.config.global.clone();
         
         // Save the merged config
@@ -324,7 +323,7 @@ impl ManagerApp {
         // Re-find selected profile index after reload
         self.selected_profile_idx = self.config.profiles
             .iter()
-            .position(|p| p.name == self.config.manager.selected_profile)
+            .position(|p| p.name == self.config.global.selected_profile)
             .unwrap_or(0);
         
         self.settings_changed = false;
@@ -654,6 +653,11 @@ fn load_window_icon() -> Result<egui::IconData> {
 }
 
 pub fn run_gui() -> Result<()> {
+    // Load config to get window dimensions
+    let config = Config::load().unwrap_or_default();
+    let window_width = config.global.window_width as f32;
+    let window_height = config.global.window_height as f32;
+    
     #[cfg(target_os = "linux")]
     let icon = match load_window_icon() {
         Ok(icon_data) => {
@@ -671,7 +675,7 @@ pub fn run_gui() -> Result<()> {
     let icon = None;
     
     let mut viewport_builder = egui::ViewportBuilder::default()
-        .with_inner_size([WINDOW_WIDTH, WINDOW_HEIGHT])
+        .with_inner_size([window_width, window_height])
         .with_min_inner_size([WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT])
         .with_title("EVE-L Preview Manager");
     

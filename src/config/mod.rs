@@ -9,17 +9,19 @@
 //!
 //! ```text
 //! JSON File (~/.config/eve-l-preview/eve-l-preview.json)
-//!     ├── manager: WindowSettings (GUI window geometry)
-//!     ├── global: GlobalSettings (daemon behavior for all profiles)
-//!     │   ├── log_level
+//!     ├── global: GlobalSettings (daemon behavior + GUI window state)
+//!     │   ├── selected_profile (which profile is active)
+//!     │   ├── window_width, window_height (GUI manager window)
 //!     │   ├── hide_when_no_focus
 //!     │   ├── snap_threshold
 //!     │   ├── hotkey_require_eve_focus
-//!     │   └── minimize_clients_on_switch
+//!     │   ├── minimize_clients_on_switch
+//!     │   ├── preserve_thumbnail_position_on_swap
+//!     │   └── default_thumbnail_width, default_thumbnail_height
 //!     └── profiles: Vec<Profile> (visual appearance per profile)
 //!         ├── name, description
 //!         ├── opacity_percent, border_size, border_color
-//!         ├── text_size, text_x, text_y, text_foreground
+//!         ├── text_size, text_x, text_y, text_color
 //!         ├── cycle_group (hotkey Tab/Shift+Tab order)
 //!         └── character_positions (x, y, width, height per character)
 //! ```
@@ -32,7 +34,7 @@
 //! - **Operations**: Load, save, create/edit/delete profiles
 //! - **Save strategy**: Preserves character_positions (daemon owns this data)
 //!
-//! #### 2. `persistent::PersistentState` - Daemon Runtime
+//! #### 2. `daemon_state::PersistentState` - Daemon Runtime
 //! - **Used by**: X11 preview daemon
 //! - **Purpose**: Runtime state extracted from selected profile
 //! - **Structure**:
@@ -71,11 +73,14 @@
 //! - character_positions (window positions/dimensions)
 //!
 //! **Behavior Settings** (global, in `GlobalSettings`):
+//! - selected_profile (which profile is active)
+//! - window_width, window_height (GUI manager window dimensions)
 //! - hide_when_no_focus (show/hide thumbnails)
 //! - snap_threshold (edge snapping distance)
 //! - hotkey_require_eve_focus (restrict hotkeys to EVE focus)
-//! - log_level (daemon logging verbosity)
 //! - minimize_clients_on_switch (minimize other clients on focus)
+//! - preserve_thumbnail_position_on_swap (keep position on character change)
+//! - default_thumbnail_width, default_thumbnail_height (new thumbnail defaults)
 //!
 //! ### No Conversion, Just Extraction
 //!

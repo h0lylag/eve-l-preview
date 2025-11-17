@@ -35,57 +35,72 @@ The config file lives at `~/.config/eve-l-preview/eve-l-preview.json` and gets c
 
 ```json
 {
-	"manager": {
+	"global": {
 		"selected_profile": "default",
 		"window_width": 600,
-		"window_height": 800
+		"window_height": 800,
+		"minimize_clients_on_switch": false,
+		"hotkey_require_eve_focus": true,
+		"hide_when_no_focus": false,
+		"snap_threshold": 15,
+		"preserve_thumbnail_position_on_swap": true,
+		"default_thumbnail_width": 250,
+		"default_thumbnail_height": 140
 	},
-	"global": {
-		"log_level": "info",
-		"minimize_clients_on_switch": false
-	},
-	"profiles": {
-		"default": {
-			"description": "Main fleet",
-			"opacity_percent": 80,
-			"border_enabled": true,
-			"border_size": 5,
-			"border_color": "#7FFF0000",
-			"text_size": 18,
-			"text_x": 10,
-			"text_y": 10,
-			"text_foreground": "#FFFFFFFF",
-			"text_background": "#7F000000",
-			"hide_when_no_focus": false,
-			"snap_threshold": 15,
-			"hotkey_require_eve_focus": true,
-			"cycle_group": ["Main", "Hauler Alt", "Scout"],
-			"characters": {
-				"Main": { "x": 100, "y": 200, "width": 480, "height": 270 },
-				"Hauler Alt": { "x": 600, "y": 200, "width": 480, "height": 270 }
-			}
+	"profiles": [{
+		"name": "default",
+		"description": "Main fleet",
+		"opacity_percent": 80,
+		"border_enabled": true,
+		"border_size": 5,
+		"border_color": "#7FFF0000",
+		"text_size": 18,
+		"text_x": 10,
+		"text_y": 10,
+		"text_color": "#FFFFFFFF",
+		"cycle_group": ["Main", "Hauler Alt", "Scout"],
+		"characters": {
+			"Main": { "x": 100, "y": 200, "dimensions": { "width": 480, "height": 270 } },
+			"Hauler Alt": { "x": 600, "y": 200, "dimensions": { "width": 480, "height": 270 } }
 		}
-	}
+	}]
 }
 ```
 
 ### Config options
 
+**Global Settings:**
+
 | Setting | Type | Default | What it does |
 |-----------|------|----------|-------------|
-| `opacity_percent` | 0-100 | 80 | How transparent the previews are |
-| `border_size` | number | 5 | Border width in pixels around focused preview |
+| `selected_profile` | string | `"default"` | Which profile is currently active |
+| `window_width` | number | 600 | GUI manager window width |
+| `window_height` | number | 800 | GUI manager window height |
+| `minimize_clients_on_switch` | true/false | false | Minimize other clients when switching focus |
+| `hotkey_require_eve_focus` | true/false | false | Only allow Tab cycling when EVE is focused |
+| `hide_when_no_focus` | true/false | false | Hide previews when no EVE window is focused |
+| `snap_threshold` | number | 15 | How close to snap to edges (0 = off) |
+| `preserve_thumbnail_position_on_swap` | true/false | true | Keep position when character switches |
+| `default_thumbnail_width` | number | 250 | Default width for new thumbnails |
+| `default_thumbnail_height` | number | 140 | Default height for new thumbnails |
+
+**Per-Profile Settings:**
+
+| Setting | Type | Default | What it does |
+|-----------|------|----------|-------------|
+| `opacity_percent` | 0-100 | 75 | How transparent the previews are |
+| `border_enabled` | true/false | true | Show border around thumbnails |
+| `border_size` | number | 3 | Border width in pixels |
 | `border_color` | hex | `#7FFF0000` | Border color (AARRGGBB format) |
 | `text_x` | number | 10 | Where to draw character name (horizontal) |
 | `text_y` | number | 10 | Where to draw character name (vertical) |
 | `text_color` | hex | `#FFFFFFFF` | Character name text color |
-| `text_size` | number | 18 | Character name font size |
-| `hide_when_no_focus` | true/false | false | Hide previews when no EVE window is focused |
-| `snap_threshold` | number | 15 | How close to snap to edges (0 = off) |
-| `hotkey_require_eve_focus` | true/false | true | Only allow Tab cycling when EVE is focused |
-| `hotkey_order` | list | `[]` | Order of characters for Tab cycling |
+| `text_size` | number | 22 | Character name font size |
+| `cycle_group` | list | `[]` | Order of characters for Tab cycling |
 
-The per-character settings (`x`, `y`, `width`, `height`) get saved automatically when you drag previews around or when you first log into a character.
+The per-character settings (`x`, `y`, `dimensions`) get saved automatically when you drag previews around or when you first log into a character.
+
+**Note:** Log level is controlled via the `RUST_LOG` environment variable (e.g., `RUST_LOG=debug`), not in the config file.
 
 ### Environment variable overrides
 

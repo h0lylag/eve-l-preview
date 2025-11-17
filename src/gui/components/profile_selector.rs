@@ -48,7 +48,7 @@ impl ProfileSelector {
                             };
                             
                             if ui.selectable_value(selected_idx, idx, label).clicked() {
-                                config.manager.selected_profile = profile.name.clone();
+                                config.global.selected_profile = profile.name.clone();
                                 action = ProfileAction::SwitchProfile;
                             }
                         }
@@ -214,7 +214,7 @@ impl ProfileSelector {
                             let profile = &mut config.profiles[selected_idx];
                             profile.name = self.edit_profile_name.clone();
                             profile.description = self.edit_profile_desc.clone();
-                            config.manager.selected_profile = profile.name.clone();
+                            config.global.selected_profile = profile.name.clone();
                             action = ProfileAction::ProfileUpdated;
                             self.show_edit_dialog = false;
                         }
@@ -258,7 +258,7 @@ impl ProfileSelector {
                         if *selected_idx >= config.profiles.len() {
                             *selected_idx = config.profiles.len() - 1;
                         }
-                        config.manager.selected_profile = config.profiles[*selected_idx].name.clone();
+                        config.global.selected_profile = config.profiles[*selected_idx].name.clone();
                         action = ProfileAction::ProfileDeleted;
                         self.show_delete_confirm = false;
                     }

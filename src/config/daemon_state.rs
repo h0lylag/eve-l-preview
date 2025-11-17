@@ -126,7 +126,7 @@ impl PersistentState {
         // Find the selected profile
         let profile = config.profiles
             .iter()
-            .find(|p| p.name == config.manager.selected_profile)
+            .find(|p| p.name == config.global.selected_profile)
             .or_else(|| config.profiles.first())
             .expect("Config must have at least one profile")
             .clone();
@@ -164,7 +164,7 @@ impl PersistentState {
         
         // Update ONLY character positions in the selected profile
         // Preserve all other settings (they come from GUI)
-        let selected_name = profile_config.manager.selected_profile.clone();
+        let selected_name = profile_config.global.selected_profile.clone();
         let profile_idx = profile_config.profiles
             .iter()
             .position(|p| p.name == selected_name)

@@ -25,16 +25,14 @@ pub enum SaveStrategy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
-    pub manager: ManagerSettings,
-    #[serde(default)]
     pub global: GlobalSettings,
     #[serde(default = "default_profiles")]
     pub profiles: Vec<Profile>,
 }
 
-/// Manager-specific settings (window state, selected profile)
+/// Global daemon behavior (applies to all profiles)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ManagerSettings {
+pub struct GlobalSettings {
     #[serde(default = "default_profile_name")]
     pub selected_profile: String,
     #[serde(default = "default_window_width")]
@@ -45,13 +43,6 @@ pub struct ManagerSettings {
     pub window_x: Option<i16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_y: Option<i16>,
-}
-
-/// Global daemon behavior (applies to all profiles)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GlobalSettings {
-    #[serde(default = "default_log_level")]
-    pub log_level: String,
     #[serde(default)]
     pub minimize_clients_on_switch: bool,
     #[serde(default)]
@@ -115,10 +106,6 @@ fn default_window_height() -> u16 {
     800
 }
 
-fn default_log_level() -> String {
-    "info".to_string()
-}
-
 fn default_snap_threshold() -> u16 {
     15
 }
@@ -156,7 +143,7 @@ fn default_profiles() -> Vec<Profile> {
     }]
 }
 
-impl Default for ManagerSettings {
+impl Default for GlobalSettings {
     fn default() -> Self {
         Self {
             selected_profile: default_profile_name(),
@@ -164,14 +151,6 @@ impl Default for ManagerSettings {
             window_height: default_window_height(),
             window_x: None,
             window_y: None,
-        }
-    }
-}
-
-impl Default for GlobalSettings {
-    fn default() -> Self {
-        Self {
-            log_level: default_log_level(),
             minimize_clients_on_switch: false,
             hotkey_require_eve_focus: false,
             hide_when_no_focus: false,
@@ -275,7 +254,6 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            manager: ManagerSettings::default(),
             global: GlobalSettings::default(),
             profiles: default_profiles(),
         }
