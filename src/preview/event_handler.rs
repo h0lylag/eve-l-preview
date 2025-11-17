@@ -38,7 +38,7 @@ fn handle_damage_notify(ctx: &AppContext, eves: &HashMap<Window, Thumbnail>, eve
 #[tracing::instrument(skip(ctx, persistent_state, eves, session_state, cycle_state, check_and_create_window))]
 fn handle_create_notify<'a>(
     ctx: &AppContext<'a>,
-    persistent_state: &PersistentState,
+    persistent_state: &mut PersistentState,
     eves: &mut HashMap<Window, Thumbnail<'a>>,
     event: CreateNotifyEvent,
     session_state: &SessionState,
@@ -52,10 +52,16 @@ fn handle_create_notify<'a>(
         info!(window = event.window, character = %thumbnail.character_name, "Created thumbnail for new EVE window");
         
         // Save initial position and dimensions for new character
+        // Query geometry to get actual position from X11
+        let geom = ctx.conn.get_geometry(thumbnail.window)
+            .context("Failed to query geometry for new thumbnail")?
+            .reply()
+            .context("Failed to get geometry reply for new thumbnail")?;
+        
         persistent_state.update_position(
             &thumbnail.character_name,
-            thumbnail.position.x,
-            thumbnail.position.y,
+            geom.x,
+            geom.y,
             thumbnail.dimensions.width,
             thumbnail.dimensions.height,
         )
@@ -406,10 +412,16 @@ pub fn handle_event<'a>(
                 // New EVE window detected
                 
                 // Save initial position and dimensions for new character
+                // Query geometry to get actual position from X11
+                let geom = ctx.conn.get_geometry(thumbnail.window)
+                    .context("Failed to query geometry for newly detected thumbnail")?
+                    .reply()
+                    .context("Failed to get geometry reply for newly detected thumbnail")?;
+                
                 persistent_state.update_position(
                     &thumbnail.character_name,
-                    thumbnail.position.x,
-                    thumbnail.position.y,
+                    geom.x,
+                    geom.y,
                     thumbnail.dimensions.width,
                     thumbnail.dimensions.height,
                 )

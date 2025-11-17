@@ -144,7 +144,7 @@ fn check_and_create_window<'a>(
 
 fn get_eves<'a>(
     ctx: &AppContext<'a>,
-    persistent_state: &PersistentState,
+    persistent_state: &mut PersistentState,
     state: &SessionState,
 ) -> Result<HashMap<Window, Thumbnail<'a>>> {
     let net_client_list = ctx.conn.intern_atom(false, b"_NET_CLIENT_LIST")
@@ -175,10 +175,16 @@ fn get_eves<'a>(
             .context(format!("Failed to process window {} during initial scan", w))? {
             
             // Save initial position and dimensions (important for first-time characters)
+            // Query geometry to get actual position from X11
+            let geom = ctx.conn.get_geometry(eve.window)
+                .context("Failed to query geometry during initial scan")?
+                .reply()
+                .context("Failed to get geometry reply during initial scan")?;
+            
             persistent_state.update_position(
                 &eve.character_name,
-                eve.position.x,
-                eve.position.y,
+                geom.x,
+                geom.y,
                 eve.dimensions.width,
                 eve.dimensions.height,
             )
@@ -275,7 +281,7 @@ pub fn run_preview_daemon() -> Result<()> {
         font_renderer: &font_renderer,
     };
 
-    let mut eves = get_eves(&ctx, &persistent_state, &session_state)
+    let mut eves = get_eves(&ctx, &mut persistent_state, &session_state)
         .context("Failed to get initial list of EVE windows")?;
     
     // Register initial windows with cycle state
