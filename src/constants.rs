@@ -28,6 +28,15 @@ pub mod x11 {
 pub mod input {
     /// Key press event value
     pub const KEY_PRESS: i32 = 1;
+    
+    /// Key code for Tab key (from Linux input-event-codes.h)
+    pub const KEY_TAB: u16 = 15;
+    
+    /// Key code for Left Shift key
+    pub const KEY_LEFTSHIFT: u16 = 42;
+    
+    /// Key code for Right Shift key  
+    pub const KEY_RIGHTSHIFT: u16 = 54;
 }
 
 /// Mouse button constants

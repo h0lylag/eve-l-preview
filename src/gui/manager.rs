@@ -529,7 +529,7 @@ fn load_tray_icon() -> Result<Icon> {
     let icon_bytes = include_bytes!("../../assets/icon.png");
     let decoder = png::Decoder::new(Cursor::new(icon_bytes));
     let mut reader = decoder.read_info()?;
-    let mut buf = vec![0; reader.output_buffer_size()];
+    let mut buf = vec![0; reader.output_buffer_size().context("PNG has no output buffer size")?];
     let info = reader.next_frame(&mut buf)?;
     let rgba = &buf[..info.buffer_size()];
 
@@ -563,7 +563,7 @@ fn load_window_icon() -> Result<egui::IconData> {
     let icon_bytes = include_bytes!("../../assets/icon.png");
     let decoder = png::Decoder::new(Cursor::new(icon_bytes));
     let mut reader = decoder.read_info()?;
-    let mut buf = vec![0; reader.output_buffer_size()];
+    let mut buf = vec![0; reader.output_buffer_size().context("PNG has no output buffer size")?];
     let info = reader.next_frame(&mut buf)?;
     let rgba = &buf[..info.buffer_size()];
 

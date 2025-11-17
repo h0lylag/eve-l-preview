@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use evdev::{Device, EventType, InputEventKind, Key};
+use evdev::{Device, EventType, KeyCode};
 use std::sync::mpsc::Sender;
 use std::thread;
 use tracing::{debug, error, info, warn};
@@ -28,7 +28,7 @@ fn find_all_keyboard_devices() -> Result<Vec<Device>> {
         if let Ok(device) = Device::open(&path) {
             // Check if it has Tab key (indicates keyboard)
             if let Some(keys) = device.supported_keys() {
-                    if keys.contains(Key::KEY_TAB) {
+                    if keys.contains(KeyCode(input::KEY_TAB)) {
                     let key_count = keys.iter().count();
                     info!(device_path = %path.display(), name = ?device.name(), key_count = key_count, "Found keyboard device");
                     devices.push(device);
@@ -83,24 +83,20 @@ fn listen_for_hotkeys(mut device: Device, sender: Sender<CycleCommand>) -> Resul
         let mut tab_presses = Vec::new();
 
         for event in events {
-            // Log all key events for debugging
-            if event.event_type() == EventType::KEY {
-                if let InputEventKind::Key(key) = event.kind() {
-                    debug!(key = ?key, value = event.value(), "Key event");
-                }
-            }
-
             // Only care about key events
             if event.event_type() != EventType::KEY {
                 continue;
             }
 
-            if let InputEventKind::Key(key) = event.kind() {
-                let pressed = event.value() == input::KEY_PRESS;
+            // In evdev 0.13, use event.code() to get the raw key code
+            let key_code = event.code();
+            let pressed = event.value() == input::KEY_PRESS;
 
-                if key == Key::KEY_TAB && pressed {
-                    tab_presses.push(());
-                }
+            // Log all key events for debugging
+            debug!(key_code = key_code, value = event.value(), "Key event");
+
+            if key_code == input::KEY_TAB && pressed {
+                tab_presses.push(());
             }
         }
 
@@ -111,8 +107,8 @@ fn listen_for_hotkeys(mut device: Device, sender: Sender<CycleCommand>) -> Resul
             let key_state = device.get_key_state()
                 .context("Failed to get keyboard state")?;
             
-            let shift_pressed = key_state.contains(Key::KEY_LEFTSHIFT) 
-                || key_state.contains(Key::KEY_RIGHTSHIFT);
+            let shift_pressed = key_state.contains(KeyCode(input::KEY_LEFTSHIFT)) 
+                || key_state.contains(KeyCode(input::KEY_RIGHTSHIFT));
 
             let command = if shift_pressed {
                 CycleCommand::Backward
