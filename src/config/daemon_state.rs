@@ -5,12 +5,12 @@
 //! then maintains runtime character positions synchronized with the JSON file.
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+// serde derives aren't needed in this module (profile config is parsed elsewhere)
+// keep serde usages local to the config/profile module
 use std::collections::HashMap;
-use std::env;
 use std::fs;
 use std::path::PathBuf;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use x11rb::protocol::render::Color;
 
 use crate::color::{HexColor, Opacity};
@@ -234,19 +234,9 @@ impl PersistentState {
         Ok(None)
     }
 
-    fn parse_num<T: std::str::FromStr + TryFrom<u128>>(var: &str) -> Option<T> where <T as TryFrom<u128>>::Error: std::fmt::Debug, <T as std::str::FromStr>::Err: std::fmt::Debug {
-        if let Ok(s) = env::var(var) {
-            let s = s.trim();
-            if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"))
-                && let Ok(n) = u128::from_str_radix(hex, 16)
-            {
-                return T::try_from(n).inspect_err(|e| error!(var = %var, error = ?e, "failed to parse hex env var")).ok();
-            } else {
-                return s.parse::<T>().inspect_err(|e| error!(var = %var, error = ?e, "failed to parse env var" )).ok();
-            }
-        }
-        None
-    }
+    // helper removed: parse_num was an env-var parsing helper (hex/decimal) but is
+    // not used by the daemon runtime. If we need this behavior later, reintroduce
+    // a small helper in a shared util module.
 }
 
 #[cfg(test)]

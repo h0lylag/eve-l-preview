@@ -363,7 +363,7 @@ impl ManagerApp {
                     self.reload_daemon_config();
                 }
             }
-            ProfileAction::ProfileCreated | ProfileAction::ProfileDeleted => {
+            ProfileAction::ProfileCreated | ProfileAction::ProfileDeleted | ProfileAction::ProfileUpdated => {
                 // Save config and reload daemon
                 if let Err(err) = self.save_config() {
                     error!(error = ?err, "Failed to save config after profile action");

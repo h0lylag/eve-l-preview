@@ -8,6 +8,7 @@ pub struct ProfileSelector {
     show_new_dialog: bool,
     show_duplicate_dialog: bool,
     show_delete_confirm: bool,
+    show_edit_dialog: bool,
 }
 
 impl ProfileSelector {
@@ -18,6 +19,7 @@ impl ProfileSelector {
             show_new_dialog: false,
             show_duplicate_dialog: false,
             show_delete_confirm: false,
+            show_edit_dialog: false,
         }
     }
     
@@ -69,6 +71,13 @@ impl ProfileSelector {
                     self.edit_profile_name = format!("{} (copy)", current.name);
                     self.edit_profile_desc = current.description.clone();
                 }
+
+                if ui.button("✏ Edit").clicked() {
+                    self.show_edit_dialog = true;
+                    let current = &config.profiles[*selected_idx];
+                    self.edit_profile_name = current.name.clone();
+                    self.edit_profile_desc = current.description.clone();
+                }
                 
                 if ui.button("🗑 Delete").clicked() && config.profiles.len() > 1 {
                     self.show_delete_confirm = true;
@@ -89,6 +98,10 @@ impl ProfileSelector {
             action = self.duplicate_profile_dialog(ui.ctx(), config, *selected_idx);
         }
         
+        if self.show_edit_dialog {
+            action = self.edit_profile_dialog(ui.ctx(), config, *selected_idx);
+        }
+
         if self.show_delete_confirm {
             action = self.delete_confirm_dialog(ui.ctx(), config, selected_idx);
         }
@@ -174,6 +187,47 @@ impl ProfileSelector {
         
         action
     }
+
+    fn edit_profile_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        config: &mut Config,
+        selected_idx: usize,
+    ) -> ProfileAction {
+        let mut action = ProfileAction::None;
+
+        egui::Window::new("Edit Profile")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label("Profile Name:");
+                ui.text_edit_singleline(&mut self.edit_profile_name);
+
+                ui.label("Description (optional):");
+                ui.text_edit_singleline(&mut self.edit_profile_desc);
+
+                ui.add_space(ITEM_SPACING);
+
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        if !self.edit_profile_name.is_empty() {
+                            let profile = &mut config.profiles[selected_idx];
+                            profile.name = self.edit_profile_name.clone();
+                            profile.description = self.edit_profile_desc.clone();
+                            config.manager.selected_profile = profile.name.clone();
+                            action = ProfileAction::ProfileUpdated;
+                            self.show_edit_dialog = false;
+                        }
+                    }
+
+                    if ui.button("Cancel").clicked() {
+                        self.show_edit_dialog = false;
+                    }
+                });
+            });
+
+        action
+    }
     
     fn delete_confirm_dialog(
         &mut self,
@@ -225,4 +279,5 @@ pub enum ProfileAction {
     SwitchProfile,
     ProfileCreated,
     ProfileDeleted,
+    ProfileUpdated,
 }

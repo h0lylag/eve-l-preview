@@ -11,7 +11,6 @@ pub const WINDOW_MIN_HEIGHT: f32 = 600.0;
 /// Layout spacing
 pub const SECTION_SPACING: f32 = 15.0;
 pub const ITEM_SPACING: f32 = 8.0;
-pub const PADDING: f32 = 10.0;
 
 /// Status colors
 pub const STATUS_RUNNING: egui::Color32 = egui::Color32::from_rgb(0, 200, 0);

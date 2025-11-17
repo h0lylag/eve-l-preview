@@ -33,7 +33,7 @@ pkgs.rustPlatform.buildRustPackage rec {
   nativeBuildInputs = with pkgs; [
     makeWrapper
     pkg-config
-    mold # Fast linker - 2-5x faster than ld
+    mold
   ];
 
   buildInputs = with pkgs; [

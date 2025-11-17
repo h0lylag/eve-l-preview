@@ -42,11 +42,6 @@ impl HexColor {
         self.0
     }
 
-    /// Convert to hex string with # prefix
-    pub fn to_hex_string(self) -> String {
-        format!("#{:08X}", self.0)
-    }
-
     /// Convert to X11 Color (16-bit per channel, 0-65535 range)
     pub fn to_x11_color(self) -> Color {
         let a = (self.0 >> 24) & 0xFF;
@@ -77,22 +72,10 @@ impl Opacity {
         Self(percent.min(100))
     }
 
-    /// Get percentage value
-    pub fn percent(self) -> u8 {
-        self.0
-    }
-
     /// Convert to ARGB32 opacity value (alpha in upper 8 bits)
     pub fn to_argb32(self) -> u32 {
         let alpha = (self.0 as f32 / 100.0 * 255.0) as u32;
         alpha << 24
-    }
-
-    /// Create from ARGB32 opacity value
-    pub fn from_argb32(opacity: u32) -> Self {
-        let alpha = (opacity >> 24) & 0xFF;
-        let percent = ((alpha as f32 / 255.0) * 100.0) as u8;
-        Self(percent.min(100))
     }
 }
 
