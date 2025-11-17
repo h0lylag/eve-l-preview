@@ -19,7 +19,7 @@ use tray_icon::{
 use gtk::glib::ControlFlow;
 
 use super::{components, constants::*};
-use crate::config::profile::Config;
+use crate::config::profile::{Config, SaveStrategy};
 use crate::gui::components::profile_selector::{ProfileSelector, ProfileAction};
 
 #[cfg(target_os = "linux")]
@@ -267,7 +267,48 @@ impl ManagerApp {
     }
 
     fn save_config(&mut self) -> Result<()> {
-        self.config.save().context("Failed to save configuration")?;
+        // Load fresh config from disk (has all characters including daemon's additions)
+        let mut disk_config = Config::load().unwrap_or_else(|_| self.config.clone());
+        
+        // Merge strategy: Start with disk config, update only what GUI owns
+        for gui_profile in &self.config.profiles {
+            if let Some(disk_profile) = disk_config.profiles.iter_mut()
+                .find(|p| p.name == gui_profile.name)
+            {
+                // Update visual settings from GUI
+                disk_profile.opacity_percent = gui_profile.opacity_percent;
+                disk_profile.border_enabled = gui_profile.border_enabled;
+                disk_profile.border_size = gui_profile.border_size;
+                disk_profile.border_color = gui_profile.border_color.clone();
+                disk_profile.text_size = gui_profile.text_size;
+                disk_profile.text_x = gui_profile.text_x;
+                disk_profile.text_y = gui_profile.text_y;
+                disk_profile.text_color = gui_profile.text_color.clone();
+                disk_profile.cycle_group = gui_profile.cycle_group.clone();
+                disk_profile.description = gui_profile.description.clone();
+                
+                // For character_positions: update dimensions only, preserve positions
+                for (char_name, gui_settings) in &gui_profile.character_positions {
+                    if let Some(disk_settings) = disk_profile.character_positions.get_mut(char_name) {
+                        // Character exists in both: update dimensions, keep daemon's position
+                        disk_settings.dimensions = gui_settings.dimensions;
+                    } else {
+                        // New character added in GUI: add it with GUI's data
+                        disk_profile.character_positions.insert(char_name.clone(), gui_settings.clone());
+                    }
+                }
+                // Characters in disk but not GUI are preserved (daemon owns them)
+            }
+        }
+        
+        // Copy manager and global settings from GUI
+        disk_config.manager = self.config.manager.clone();
+        disk_config.global = self.config.global.clone();
+        
+        // Save the merged config
+        disk_config.save_with_strategy(SaveStrategy::OverwriteCharacterPositions)
+            .context("Failed to save configuration")?;
+        
         self.settings_changed = false;
         self.status_message = Some(StatusMessage {
             text: "Configuration saved successfully".to_string(),
