@@ -14,9 +14,6 @@ let
       xorg.libXcursor
       xorg.libXrandr
       xorg.libXi
-      gtk3
-      libappindicator
-      xdotool
     ];
 in
 pkgs.rustPlatform.buildRustPackage rec {
@@ -44,9 +41,6 @@ pkgs.rustPlatform.buildRustPackage rec {
     xorg.libXcursor
     xorg.libXrandr
     xorg.libXi
-    gtk3
-    libappindicator
-    xdotool
   ];
 
   # Set LD_LIBRARY_PATH so winit can find libraries at runtime

@@ -1,4 +1,4 @@
-//! GUI manager implemented with egui/eframe and tray-icon system tray support
+//! GUI manager implemented with egui/eframe and ksni system tray support
 
 use std::io::Cursor;
 use std::process::{Child, Command};
@@ -10,23 +10,87 @@ use eframe::{egui, NativeOptions};
 use tracing::{error, info, warn};
 
 #[cfg(target_os = "linux")]
-use tray_icon::{
-    menu::{Menu, MenuEvent, MenuItem, MenuId, PredefinedMenuItem},
-    Icon, TrayIconBuilder,
-};
-
-#[cfg(target_os = "linux")]
-use gtk::glib::ControlFlow;
+use ksni::TrayMethods;
 
 use super::{components, constants::*};
 use crate::config::profile::{Config, SaveStrategy};
 use crate::gui::components::profile_selector::{ProfileSelector, ProfileAction};
 
 #[cfg(target_os = "linux")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TrayCommand {
-    Reload,
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TrayMessage {
+    Refresh,
+    SwitchProfile(usize),
     Quit,
+}
+
+#[cfg(target_os = "linux")]
+struct AppTray {
+    tx: std::sync::mpsc::Sender<TrayMessage>,
+    current_profile_idx: usize,
+    profile_names: Vec<String>,
+}
+
+#[cfg(target_os = "linux")]
+impl ksni::Tray for AppTray {
+    fn id(&self) -> String {
+        "eve-l-preview".into()
+    }
+
+    fn title(&self) -> String {
+        "EVE-L Preview".into()
+    }
+
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        load_tray_icon_pixmap()
+            .map(|icon| vec![icon])
+            .unwrap_or_default()
+    }
+
+    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        use ksni::menu::*;
+        
+        vec![
+            // Refresh item
+            StandardItem {
+                label: "Refresh".into(),
+                activate: Box::new(|this: &mut AppTray| {
+                    let _ = this.tx.send(TrayMessage::Refresh);
+                }),
+                ..Default::default()
+            }.into(),
+            
+            // Separator
+            MenuItem::Separator,
+            
+            // Profile selector (radio group)
+            RadioGroup {
+                selected: self.current_profile_idx,
+                select: Box::new(|this: &mut AppTray, idx| {
+                    this.current_profile_idx = idx;
+                    let _ = this.tx.send(TrayMessage::SwitchProfile(idx));
+                }),
+                options: self.profile_names.iter().map(|name| RadioItem {
+                    label: name.clone().into(),
+                    ..Default::default()
+                }).collect(),
+                ..Default::default()
+            }.into(),
+            
+            // Separator
+            MenuItem::Separator,
+            
+            // Quit item
+            StandardItem {
+                label: "Quit".into(),
+                icon_name: "application-exit".into(),
+                activate: Box::new(|this: &mut AppTray| {
+                    let _ = this.tx.send(TrayMessage::Quit);
+                }),
+                ..Default::default()
+            }.into(),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,7 +134,9 @@ struct ManagerApp {
     last_health_check: Instant,
     status_message: Option<StatusMessage>,
     #[cfg(target_os = "linux")]
-    tray_rx: Receiver<TrayCommand>,
+    tray_rx: Receiver<TrayMessage>,
+    #[cfg(target_os = "linux")]
+    shutdown_signal: std::sync::Arc<tokio::sync::Notify>,
     should_quit: bool,
     
     // Configuration state with profiles
@@ -107,49 +173,52 @@ impl ManagerApp {
 
         // Create channel for tray icon commands
         #[cfg(target_os = "linux")]
-        let (tray_tx, tray_rx) = mpsc::channel();
+        let (tx_to_app, tray_rx) = mpsc::channel();
 
-        // Spawn GTK thread for tray icon on Linux
-        // GTK must run in its own thread because it conflicts with eframe's event loop
+        // Spawn Tokio thread for ksni tray
+        #[cfg(target_os = "linux")]
+        let shutdown_signal = std::sync::Arc::new(tokio::sync::Notify::new());
+        #[cfg(target_os = "linux")]
+        let shutdown_clone = shutdown_signal.clone();
+
         #[cfg(target_os = "linux")]
         std::thread::spawn(move || {
-            if let Err(e) = gtk::init() {
-                error!(error = ?e, "Failed to initialize GTK for tray icon");
-                return;
-            }
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to build Tokio runtime for tray");
             
-            match create_tray_icon(tray_tx.clone()) {
-                Ok(tray_icon) => {
-                    info!("Tray icon created in GTK thread");
-                    
-                    // Set up menu event listener
-                    let menu_channel = MenuEvent::receiver();
-                    let tx = tray_tx;
-                    
-                    // Poll for menu events in GTK thread
-                    gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
-                        if let Ok(event) = menu_channel.try_recv() {
-                            let id = event.id.0;
-                            info!(menu_id = %id, "Tray menu event received");
-                            
-                            if id == "reload" {
-                                let _ = tx.send(TrayCommand::Reload);
-                            } else if id == "quit" {
-                                let _ = tx.send(TrayCommand::Quit);
-                            }
-                        }
-                        ControlFlow::Continue
-                    });
-                    
-                    // Keep tray_icon alive by moving it into a leaked Box
-                    // This prevents it from being dropped when the thread continues
-                    Box::leak(Box::new(tray_icon));
-                    gtk::main();
+            runtime.block_on(async move {
+                // Load profile names from config
+                let config = Config::load().unwrap_or_default();
+                let profile_names: Vec<String> = config.profiles.iter()
+                    .map(|p| p.name.clone())
+                    .collect();
+                let current_idx = config.profiles.iter()
+                    .position(|p| p.name == config.global.selected_profile)
+                    .unwrap_or(0);
+                
+                let tray = AppTray {
+                    tx: tx_to_app,
+                    current_profile_idx: current_idx,
+                    profile_names,
+                };
+                
+                match tray.spawn().await {
+                    Ok(handle) => {
+                        info!("Tray icon created via ksni/D-Bus");
+                        
+                        // Wait for shutdown signal
+                        shutdown_clone.notified().await;
+                        
+                        // Gracefully shutdown tray
+                        handle.shutdown().await;
+                    }
+                    Err(e) => {
+                        error!(error = ?e, "Failed to create tray icon (D-Bus unavailable?)");
+                    }
                 }
-                Err(e) => {
-                    error!(error = ?e, "Failed to create tray icon");
-                }
-            }
+            });
         });
 
         // Load configuration
@@ -175,6 +244,7 @@ impl ManagerApp {
             last_health_check: Instant::now(),
             status_message: None,
             tray_rx,
+            shutdown_signal,
             should_quit: false,
             config,
             selected_profile_idx,
@@ -398,13 +468,35 @@ impl ManagerApp {
 
     fn poll_tray_events(&mut self) {
         #[cfg(target_os = "linux")]
-        while let Ok(cmd) = self.tray_rx.try_recv() {
-            match cmd {
-                TrayCommand::Reload => {
-                    info!("Reload requested from tray menu");
+        while let Ok(msg) = self.tray_rx.try_recv() {
+            match msg {
+                TrayMessage::Refresh => {
+                    info!("Refresh requested from tray menu");
                     self.reload_daemon_config();
                 }
-                TrayCommand::Quit => {
+                TrayMessage::SwitchProfile(idx) => {
+                    info!(profile_idx = idx, "Profile switch requested from tray");
+                    
+                    // Update config's selected_profile field
+                    if idx < self.config.profiles.len() {
+                        self.config.global.selected_profile = 
+                            self.config.profiles[idx].name.clone();
+                        self.selected_profile_idx = idx;
+                        
+                        // Save config with new selection
+                        if let Err(err) = self.save_config() {
+                            error!(error = ?err, "Failed to save config after profile switch");
+                            self.status_message = Some(StatusMessage {
+                                text: format!("Profile switch failed: {err}"),
+                                color: STATUS_STOPPED,
+                            });
+                        } else {
+                            // Reload daemon with new profile
+                            self.reload_daemon_config();
+                        }
+                    }
+                }
+                TrayMessage::Quit => {
                     info!("Quit requested from tray menu");
                     self.should_quit = true;
                 }
@@ -569,6 +661,14 @@ impl eframe::App for ManagerApp {
         if let Err(err) = self.stop_daemon() {
             error!(error = ?err, "Failed to stop daemon during shutdown");
         }
+        
+        // Signal tray thread to shutdown
+        #[cfg(target_os = "linux")]
+        {
+            self.shutdown_signal.notify_one();
+            info!("Signaled tray thread to shutdown");
+        }
+        
         info!("Manager exiting");
     }
 }
@@ -582,68 +682,40 @@ fn spawn_preview_daemon() -> Result<Child> {
 }
 
 #[cfg(target_os = "linux")]
-fn create_tray_icon(_tray_tx: Sender<TrayCommand>) -> Result<tray_icon::TrayIcon> {
-    let icon = load_tray_icon()?;
-
-    // Build menu with Reload and Quit options
-    let menu = Menu::new();
-    let status_item = MenuItem::new("EVE-L Preview Running", false, None);
-    let reload_item = MenuItem::with_id(MenuId::new("reload"), "Reload", true, None);
-    let quit_item = MenuItem::with_id(MenuId::new("quit"), "Quit", true, None);
-    
-    menu.append(&status_item)
-        .context("Failed to append status menu item")?;
-    menu.append(&PredefinedMenuItem::separator())
-        .context("Failed to append separator")?;
-    menu.append(&reload_item)
-        .context("Failed to append reload menu item")?;
-    menu.append(&quit_item)
-        .context("Failed to append quit menu item")?;
-
-    // Build tray icon
-    let tray_icon = TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
-        .with_tooltip("EVE-L Preview")
-        .with_icon(icon)
-        .build()
-        .context("Failed to build tray icon")?;
-
-    info!("Tray icon created");
-
-    Ok(tray_icon)
-}
-
-#[cfg(target_os = "linux")]
-fn load_tray_icon() -> Result<Icon> {
+fn load_tray_icon_pixmap() -> Result<ksni::Icon> {
     let icon_bytes = include_bytes!("../../assets/icon.png");
     let decoder = png::Decoder::new(Cursor::new(icon_bytes));
     let mut reader = decoder.read_info()?;
-    let mut buf = vec![0; reader.output_buffer_size().context("PNG has no output buffer size")?];
+    let mut buf = vec![0; reader.output_buffer_size()
+        .context("PNG has no output buffer size")?];
     let info = reader.next_frame(&mut buf)?;
     let rgba = &buf[..info.buffer_size()];
 
-    // tray-icon expects RGBA format directly
-    let rgba_vec = match info.color_type {
-        png::ColorType::Rgba => rgba.to_vec(),
+    // Convert RGBA to ARGB for ksni
+    let argb: Vec<u8> = match info.color_type {
+        png::ColorType::Rgba => {
+            rgba.chunks_exact(4)
+                .flat_map(|chunk| [chunk[3], chunk[0], chunk[1], chunk[2]]) // RGBA → ARGB
+                .collect()
+        }
         png::ColorType::Rgb => {
-            // Convert RGB to RGBA
-            let mut rgba_data = Vec::with_capacity(rgba.len() / 3 * 4);
-            for chunk in rgba.chunks_exact(3) {
-                rgba_data.extend_from_slice(chunk);
-                rgba_data.push(0xFF); // Add full alpha
-            }
-            rgba_data
+            rgba.chunks_exact(3)
+                .flat_map(|chunk| [0xFF, chunk[0], chunk[1], chunk[2]]) // RGB → ARGB (full alpha)
+                .collect()
         }
         other => {
             return Err(anyhow!(
-                "Unsupported tray icon color type {:?} (expected RGB or RGBA)",
+                "Unsupported icon color type {:?} (expected RGB or RGBA)",
                 other
             ))
         }
     };
 
-    Icon::from_rgba(rgba_vec, info.width, info.height)
-        .context("Failed to create icon from RGBA data")
+    Ok(ksni::Icon {
+        width: info.width as i32,
+        height: info.height as i32,
+        data: argb,
+    })
 }
 
 /// Load window icon from embedded PNG (same as tray icon)

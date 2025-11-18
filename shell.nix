@@ -13,8 +13,6 @@ let
       xorg.libXcursor
       xorg.libXrandr
       xorg.libXi
-      gtk3
-      libappindicator
     ];
 in
 pkgs.mkShell {
