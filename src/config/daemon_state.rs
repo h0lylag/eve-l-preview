@@ -60,8 +60,8 @@ impl PersistentState {
 
     /// Get default thumbnail dimensions for screen size
     pub fn default_thumbnail_size(&self, _screen_width: u16, _screen_height: u16) -> (u16, u16) {
-        // Fixed default dimensions - same as used in profile defaults
-        (250, 141)
+        // Use configured default dimensions from global settings
+        (self.global.default_thumbnail_width, self.global.default_thumbnail_height)
     }
 
     /// Build DisplayConfig from current settings

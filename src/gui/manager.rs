@@ -308,6 +308,9 @@ impl ManagerApp {
         disk_config.save_with_strategy(SaveStrategy::OverwriteCharacterPositions)
             .context("Failed to save configuration")?;
         
+        // Reload config to include daemon's new characters in GUI memory
+        self.config = Config::load().unwrap_or_else(|_| disk_config);
+        
         self.settings_changed = false;
         self.status_message = Some(StatusMessage {
             text: "Configuration saved successfully".to_string(),
@@ -332,6 +335,26 @@ impl ManagerApp {
             color: STATUS_STOPPED,
         });
         info!("Configuration changes discarded");
+    }
+
+    fn reload_character_list(&mut self) {
+        // Load fresh config from disk to get daemon's new characters
+        if let Ok(disk_config) = Config::load() {
+            // Merge new characters from disk into GUI config without losing GUI changes
+            for (profile_idx, gui_profile) in self.config.profiles.iter_mut().enumerate() {
+                if let Some(disk_profile) = disk_config.profiles.get(profile_idx) {
+                    if disk_profile.name == gui_profile.name {
+                        // Add any new characters from disk that GUI doesn't know about
+                        for (char_name, char_settings) in &disk_profile.character_positions {
+                            if !gui_profile.character_positions.contains_key(char_name) {
+                                gui_profile.character_positions.insert(char_name.clone(), char_settings.clone());
+                                info!(character = %char_name, profile = %gui_profile.name, "Detected new character from daemon");
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn poll_daemon(&mut self) {
@@ -362,6 +385,8 @@ impl ManagerApp {
                             text: "Preview daemon running".to_string(),
                             color: STATUS_RUNNING,
                         });
+                        // Reload config when daemon transitions to running to pick up any new characters
+                        self.reload_character_list();
                     }
                 }
                 Err(err) => {
@@ -484,8 +509,14 @@ impl eframe::App for ManagerApp {
 
             // Tab Bar
             ui.horizontal(|ui| {
+                let prev_tab = self.active_tab;
                 ui.selectable_value(&mut self.active_tab, ActiveTab::GlobalSettings, "⚙ Global Settings");
                 ui.selectable_value(&mut self.active_tab, ActiveTab::ProfileSettings, "📋 Profile Settings");
+                
+                // When switching to Profile Settings tab, reload character list to pick up new characters
+                if self.active_tab == ActiveTab::ProfileSettings && prev_tab != ActiveTab::ProfileSettings {
+                    self.reload_character_list();
+                }
             });
 
             ui.add_space(SECTION_SPACING);
