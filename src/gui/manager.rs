@@ -27,8 +27,26 @@ enum TrayMessage {
 #[cfg(target_os = "linux")]
 struct AppTray {
     tx: std::sync::mpsc::Sender<TrayMessage>,
-    current_profile_idx: usize,
-    profile_names: Vec<String>,
+}
+
+#[cfg(target_os = "linux")]
+impl AppTray {
+    /// Load current profile state from config file.
+    /// Called each time menu is opened to ensure up-to-date state.
+    fn load_current_state(&self) -> (usize, Vec<String>) {
+        match Config::load() {
+            Ok(config) => {
+                let profile_names: Vec<String> = config.profiles.iter()
+                    .map(|p| p.name.clone())
+                    .collect();
+                let current_idx = config.profiles.iter()
+                    .position(|p| p.name == config.global.selected_profile)
+                    .unwrap_or(0);
+                (current_idx, profile_names)
+            }
+            Err(_) => (0, vec!["default".to_string()]),
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -50,6 +68,9 @@ impl ksni::Tray for AppTray {
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::*;
         
+        // Reload config to get current profile state
+        let (current_profile_idx, profile_names) = self.load_current_state();
+        
         vec![
             // Refresh item
             StandardItem {
@@ -65,12 +86,11 @@ impl ksni::Tray for AppTray {
             
             // Profile selector (radio group)
             RadioGroup {
-                selected: self.current_profile_idx,
+                selected: current_profile_idx,
                 select: Box::new(|this: &mut AppTray, idx| {
-                    this.current_profile_idx = idx;
                     let _ = this.tx.send(TrayMessage::SwitchProfile(idx));
                 }),
-                options: self.profile_names.iter().map(|name| RadioItem {
+                options: profile_names.iter().map(|name| RadioItem {
                     label: name.clone().into(),
                     ..Default::default()
                 }).collect(),
@@ -189,19 +209,8 @@ impl ManagerApp {
                 .expect("Failed to build Tokio runtime for tray");
             
             runtime.block_on(async move {
-                // Load profile names from config
-                let config = Config::load().unwrap_or_default();
-                let profile_names: Vec<String> = config.profiles.iter()
-                    .map(|p| p.name.clone())
-                    .collect();
-                let current_idx = config.profiles.iter()
-                    .position(|p| p.name == config.global.selected_profile)
-                    .unwrap_or(0);
-                
                 let tray = AppTray {
                     tx: tx_to_app,
-                    current_profile_idx: current_idx,
-                    profile_names,
                 };
                 
                 match tray.spawn().await {
@@ -576,6 +585,10 @@ impl eframe::App for ManagerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_daemon();
         self.poll_tray_events();
+
+        // Request repaint after short delay to poll for tray events even when unfocused
+        // This ensures tray menu actions are processed promptly
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
 
         // Handle quit request from tray menu
         if self.should_quit {
