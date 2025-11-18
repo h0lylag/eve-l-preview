@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use fontdue::{Font, FontSettings};
 use std::fs;
 use std::path::PathBuf;
+use tracing::{info, warn};
 
 /// Rendered text as ARGB bitmap
 pub struct RenderedText {
@@ -22,26 +23,53 @@ pub struct FontRenderer {
 impl FontRenderer {
     /// Load a TrueType font from a file path
     pub fn from_path(path: PathBuf, size: f32) -> Result<Self> {
+        info!(path = %path.display(), size = size, "Attempting to load font from path");
+        
         let font_data = fs::read(&path)
             .with_context(|| format!("Failed to read font file: {}", path.display()))?;
         
         let font = Font::from_bytes(font_data, FontSettings::default())
             .map_err(|e| anyhow::anyhow!("Failed to parse font: {}", e))?;
         
+        info!(path = %path.display(), "Successfully loaded font from path");
         Ok(Self { font, size })
+    }
+    
+    /// Load font from a font name (family or fullname) via fontconfig
+    pub fn from_font_name(font_name: &str, size: f32) -> Result<Self> {
+        info!(font_name = %font_name, size = size, "Resolving font via fontconfig");
+        
+        let font_path = crate::preview::find_font_path(font_name)
+            .with_context(|| format!("Failed to resolve font '{}'", font_name))?;
+        
+        info!(font_name = %font_name, resolved_path = %font_path.display(), "Resolved font name to path via fontconfig");
+        Self::from_path(font_path, size)
     }
     
     /// Try to find and load a common system font
     pub fn from_system_font(size: f32) -> Result<Self> {
+        info!(size = size, "Attempting to load system font (fallback)");
+        
         // Try compile-time font path first (set by Nix build via FONT_PATH env var)
         const FONT_PATH: Option<&str> = option_env!("FONT_PATH");
         if let Some(nix_font_path) = FONT_PATH {
+            info!(nix_font_path = %nix_font_path, "Trying FONT_PATH from Nix build");
             if let Ok(renderer) = Self::from_path(PathBuf::from(nix_font_path), size) {
+                info!("Successfully loaded font from FONT_PATH");
                 return Ok(renderer);
             }
+            warn!(nix_font_path = %nix_font_path, "Failed to load FONT_PATH, trying fontconfig");
         }
         
-        // Fallback to hardcoded paths for non-NixOS systems
+        // Try fontconfig-based discovery
+        info!("Trying fontconfig to find 'Monospace' font");
+        if let Ok(renderer) = Self::from_font_name("Monospace", size) {
+            info!("Successfully loaded Monospace via fontconfig");
+            return Ok(renderer);
+        }
+        
+        // Fallback to hardcoded paths for non-NixOS systems (last resort)
+        info!("Trying hardcoded font paths");
         let font_paths = [
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
             "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
@@ -53,12 +81,13 @@ impl FontRenderer {
         
         for path in &font_paths {
             if let Ok(renderer) = Self::from_path(PathBuf::from(path), size) {
+                info!(path = %path, "Successfully loaded font from hardcoded path");
                 return Ok(renderer);
             }
         }
         
         Err(anyhow::anyhow!(
-            "Could not find any system fonts. Tried FONT_PATH ({:?}) and hardcoded paths: {:?}",
+            "Could not find any system fonts. Tried FONT_PATH ({:?}), fontconfig, and hardcoded paths: {:?}",
             FONT_PATH,
             font_paths
         ))

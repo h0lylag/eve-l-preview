@@ -363,6 +363,7 @@ impl ManagerApp {
                 disk_profile.text_x = gui_profile.text_x;
                 disk_profile.text_y = gui_profile.text_y;
                 disk_profile.text_color = gui_profile.text_color.clone();
+                disk_profile.text_font_family = gui_profile.text_font_family.clone();
                 disk_profile.cycle_group = gui_profile.cycle_group.clone();
                 disk_profile.description = gui_profile.description.clone();
                 

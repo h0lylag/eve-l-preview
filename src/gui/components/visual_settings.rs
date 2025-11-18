@@ -10,16 +10,29 @@ pub struct VisualSettingsState {
     current_width: u16,
     current_height: u16,
     last_target: String,
+    available_fonts: Vec<String>,
+    font_load_error: Option<String>,
 }
 
 impl VisualSettingsState {
     pub fn new() -> Self {
+        // Load available fonts at GUI startup
+        let (available_fonts, font_load_error) = match crate::preview::list_fonts() {
+            Ok(fonts) => (fonts, None),
+            Err(e) => {
+                tracing::warn!(error = ?e, "Failed to load font list from fontconfig");
+                (vec!["Monospace".to_string()], Some(e.to_string()))
+            }
+        };
+        
         Self {
             show_resize_confirmation: false,
             pending_resize_all: None,
             current_width: 250,
             current_height: 141,
             last_target: "---".to_string(),
+            available_fonts,
+            font_load_error,
         }
     }
 }
@@ -124,6 +137,31 @@ pub fn ui(ui: &mut egui::Ui, profile: &mut Profile, state: &mut VisualSettingsSt
                     changed = true;
                 }
             }
+        });
+        
+        // Font family selector
+        ui.horizontal(|ui| {
+            ui.label("Font:");
+            
+            if let Some(ref error) = state.font_load_error {
+                ui.colored_label(egui::Color32::RED, "⚠")
+                    .on_hover_text(format!("Failed to load fonts: {}", error));
+            }
+            
+            egui::ComboBox::from_id_salt("text_font_family")
+                .selected_text(&profile.text_font_family)
+                .width(200.0)
+                .show_ui(ui, |ui| {
+                    for font_family in &state.available_fonts {
+                        if ui.selectable_value(
+                            &mut profile.text_font_family,
+                            font_family.clone(),
+                            font_family
+                        ).changed() {
+                            changed = true;
+                        }
+                    }
+                });
         });
     });
     

@@ -83,6 +83,8 @@ pub struct Profile {
     pub text_y: i16,
     #[serde(rename = "text_color")]
     pub text_color: String,
+    #[serde(default = "default_text_font_family")]
+    pub text_font_family: String,
     
     // Hotkey settings (cycle_group is per-profile)
     #[serde(default)]
@@ -126,6 +128,10 @@ fn default_border_enabled() -> bool {
     true
 }
 
+fn default_text_font_family() -> String {
+    "Monospace".to_string()
+}
+
 fn default_profiles() -> Vec<Profile> {
     vec![Profile {
         name: "default".to_string(),
@@ -138,6 +144,7 @@ fn default_profiles() -> Vec<Profile> {
         text_x: 10,
         text_y: 10,
         text_color: "#FFFFFFFF".to_string(),
+        text_font_family: default_text_font_family(),
         cycle_group: Vec::new(),
         character_positions: HashMap::new(),
     }]

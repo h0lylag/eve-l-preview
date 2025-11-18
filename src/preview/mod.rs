@@ -3,9 +3,12 @@
 mod cycle_state;
 mod event_handler;
 pub mod font;
+mod font_discovery;
 mod session_state;
 mod snapping;
 mod thumbnail;
+
+pub use font_discovery::{find_font_path, get_default_monospace_font, list_font_families, list_fonts};
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -252,11 +255,38 @@ pub fn run_preview_daemon() -> Result<()> {
     let atoms = CachedAtoms::new(&conn)
         .context("Failed to cache X11 atoms at startup")?;
     
-    // Initialize font renderer with TrueType font (size from config)
-    let font_renderer = font::FontRenderer::from_system_font(persistent_state.profile.text_size as f32)
-        .context(format!("Failed to initialize font renderer with size {}", persistent_state.profile.text_size))?;
+    // Initialize font renderer with configured font (or fallback to system default)
+    let font_renderer = if !persistent_state.profile.text_font_family.is_empty() {
+        info!(
+            configured_font = %persistent_state.profile.text_font_family,
+            size = persistent_state.profile.text_size,
+            "Attempting to load user-configured font"
+        );
+        // Try user-selected font first
+        font::FontRenderer::from_font_name(
+            &persistent_state.profile.text_font_family,
+            persistent_state.profile.text_size as f32
+        )
+        .or_else(|e| {
+            warn!(
+                font = %persistent_state.profile.text_font_family,
+                error = ?e,
+                "Failed to load configured font, falling back to system default"
+            );
+            font::FontRenderer::from_system_font(persistent_state.profile.text_size as f32)
+        })
+    } else {
+        info!(
+            size = persistent_state.profile.text_size,
+            "No font configured, using system default"
+        );
+        font::FontRenderer::from_system_font(persistent_state.profile.text_size as f32)
+    }
+    .context(format!("Failed to initialize font renderer with size {}", persistent_state.profile.text_size))?;
+    
     info!(
         size = persistent_state.profile.text_size,
+        font = %persistent_state.profile.text_font_family,
         "Font renderer initialized"
     );
     

@@ -13,6 +13,7 @@ let
       xorg.libXcursor
       xorg.libXrandr
       xorg.libXi
+      fontconfig
     ];
 in
 pkgs.mkShell {

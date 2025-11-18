@@ -14,6 +14,7 @@ let
       xorg.libXcursor
       xorg.libXrandr
       xorg.libXi
+      fontconfig
     ];
 in
 pkgs.rustPlatform.buildRustPackage rec {
@@ -41,6 +42,7 @@ pkgs.rustPlatform.buildRustPackage rec {
     xorg.libXcursor
     xorg.libXrandr
     xorg.libXi
+    fontconfig
   ];
 
   # Set LD_LIBRARY_PATH so winit can find libraries at runtime
