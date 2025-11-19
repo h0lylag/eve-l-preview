@@ -7,7 +7,14 @@ use fontconfig::{Fontconfig, Pattern};
 use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use tracing::{debug, info, warn};
+
+// Cache for list_fonts() result - computed once per process
+static FONT_LIST_CACHE: OnceLock<Vec<String>> = OnceLock::new();
+
+// Cache for select_best_default_font() result - computed once per process
+static DEFAULT_FONT_CACHE: OnceLock<(String, PathBuf)> = OnceLock::new();
 
 /// Common font style names for parsing family+style strings
 /// Order matters: longer/more specific styles must come first to avoid substring matches
@@ -55,8 +62,14 @@ const KNOWN_STYLES: &[&str] = &[
 
 /// Get list of all individual fonts with their full names (e.g., "Roboto Mono Regular", "DejaVu Sans Bold")
 /// This provides more granular control than just font families
+/// Results are cached - only scanned once per process
 pub fn list_fonts() -> Result<Vec<String>> {
-    info!("Loading available fonts from fontconfig...");
+    // Return cached result if available
+    if let Some(cached) = FONT_LIST_CACHE.get() {
+        return Ok(cached.clone());
+    }
+    
+    info!("Loading available fonts from fontconfig (first call, caching results)...");
     let fc = Fontconfig::new().context("Failed to initialize fontconfig")?;
     
     // Create empty pattern to match all fonts
@@ -93,7 +106,12 @@ pub fn list_fonts() -> Result<Vec<String>> {
         "Discovered individual fonts via fontconfig"
     );
     
-    Ok(fonts.into_iter().collect())
+    let font_list: Vec<String> = fonts.into_iter().collect();
+    
+    // Cache the result
+    let _ = FONT_LIST_CACHE.set(font_list.clone());
+    
+    Ok(font_list)
 }
 
 /// Find best matching font file path for a given family name or full font name
@@ -185,7 +203,15 @@ pub fn find_font_path(font_name: &str) -> Result<PathBuf> {
 
 /// Select the best available default TrueType font by probing multiple sources
 /// Returns (font_name, path) tuple for the first working font found, or Err if none available
+/// Results are cached - only scanned once per process
 pub fn select_best_default_font() -> Result<(String, PathBuf)> {
+    // Return cached result if available
+    if let Some(cached) = DEFAULT_FONT_CACHE.get() {
+        return Ok(cached.clone());
+    }
+    
+    info!("Selecting default font (first call, caching result)...");
+    
     // Try specific known-good fonts first
     let candidates = crate::constants::defaults::text::FONT_CANDIDATES;
     
@@ -193,7 +219,9 @@ pub fn select_best_default_font() -> Result<(String, PathBuf)> {
         if let Ok(path) = find_font_path(candidate) {
             if path.exists() {
                 info!(font = candidate, path = %path.display(), "Selected default font via fontconfig");
-                return Ok((candidate.to_string(), path));
+                let result = (candidate.to_string(), path);
+                let _ = DEFAULT_FONT_CACHE.set(result.clone());
+                return Ok(result);
             }
         }
     }
@@ -227,7 +255,9 @@ pub fn select_best_default_font() -> Result<(String, PathBuf)> {
             let path = PathBuf::from(file_path);
             if path.exists() {
                 info!(font = family, path = %path.display(), "Selected first available monospace font");
-                return Ok((family.to_string(), path));
+                let result = (family.to_string(), path);
+                let _ = DEFAULT_FONT_CACHE.set(result.clone());
+                return Ok(result);
             }
         }
     }

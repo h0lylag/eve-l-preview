@@ -205,7 +205,7 @@ fn get_eves<'a>(
 }
 
 pub fn run_preview_daemon() -> Result<()> {
-    // Connect to X11 first to get screen dimensions for smart config defaults
+    // Connect to X11 first
     let (conn, screen_num) = x11rb::connect(None)
         .context("Failed to connect to X11 server. Is DISPLAY set correctly?")?;
     let screen = &conn.setup().roots[screen_num];
@@ -216,13 +216,9 @@ pub fn run_preview_daemon() -> Result<()> {
         "Connected to X11 server"
     );
 
-    // Load config with screen-aware defaults
-    let persistent_state_init = PersistentState::load_with_screen(
-        screen.width_in_pixels,
-        screen.height_in_pixels,
-    );
-    let config = persistent_state_init.build_display_config();
-    info!(config = ?config, "Loaded display configuration");
+    // DO NOT load config from file - wait for GUI to send it via IPC
+    // Create empty PersistentState that will be populated via SetProfile message
+    let persistent_state_init = PersistentState::empty();
     
     // Wrap persistent state in Arc<Mutex> for sharing with IPC thread
     let persistent_state = Arc::new(Mutex::new(persistent_state_init));
@@ -309,6 +305,9 @@ pub fn run_preview_daemon() -> Result<()> {
         font = %persistent_state.lock().unwrap().profile.text_font_family,
         "Font renderer initialized"
     );
+    
+    // Build display config (will contain empty values until SetProfile arrives)
+    let config = persistent_state.lock().unwrap().build_display_config();
     
     conn.damage_query_version(1, 1)
         .context("Failed to query DAMAGE extension version. Is DAMAGE extension available?")?;

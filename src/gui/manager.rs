@@ -1,5 +1,6 @@
 //! GUI manager implemented with egui/eframe and ksni system tray support
 
+use std::cell::RefCell;
 use std::io::Cursor;
 use std::process::{Child, Command};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -18,6 +19,12 @@ use crate::config::profile::Config;
 use crate::gui::components::profile_selector::{ProfileSelector, ProfileAction};
 use crate::ipc::{PreviewClient, PreviewRequest, PreviewResponse};
 
+// Thread-local cache for passing config from run_gui() to ManagerApp::new()
+// This eliminates duplicate Config::load() calls during startup
+thread_local! {
+    static CONFIG_CACHE: RefCell<Option<Config>> = const { RefCell::new(None) };
+}
+
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TrayMessage {
@@ -29,25 +36,15 @@ enum TrayMessage {
 #[cfg(target_os = "linux")]
 struct AppTray {
     tx: std::sync::mpsc::Sender<TrayMessage>,
+    // Cache profile state to avoid loading config from disk on every menu open
+    cached_profiles: std::sync::Arc<std::sync::Mutex<(usize, Vec<String>)>>,
 }
 
 #[cfg(target_os = "linux")]
 impl AppTray {
-    /// Load current profile state from config file.
-    /// Called each time menu is opened to ensure up-to-date state.
+    /// Get current profile state from cache (updated by ManagerApp)
     fn load_current_state(&self) -> (usize, Vec<String>) {
-        match Config::load() {
-            Ok(config) => {
-                let profile_names: Vec<String> = config.profiles.iter()
-                    .map(|p| p.name.clone())
-                    .collect();
-                let current_idx = config.profiles.iter()
-                    .position(|p| p.name == config.global.selected_profile)
-                    .unwrap_or(0);
-                (current_idx, profile_names)
-            }
-            Err(_) => (0, vec!["default".to_string()]),
-        }
+        self.cached_profiles.lock().unwrap().clone()
     }
 }
 
@@ -161,6 +158,8 @@ struct ManagerApp {
     #[cfg(target_os = "linux")]
     tray_rx: Receiver<TrayMessage>,
     #[cfg(target_os = "linux")]
+    tray_profile_cache: std::sync::Arc<std::sync::Mutex<(usize, Vec<String>)>>,
+    #[cfg(target_os = "linux")]
     shutdown_signal: std::sync::Arc<tokio::sync::Notify>,
     should_quit: bool,
     
@@ -200,6 +199,32 @@ impl ManagerApp {
         #[cfg(target_os = "linux")]
         let (tx_to_app, tray_rx) = mpsc::channel();
 
+        // Load configuration from thread-local cache (populated by run_gui())
+        // If cache is empty (shouldn't happen), fall back to loading from disk
+        let config = CONFIG_CACHE.with(|cache| {
+            cache.borrow_mut().take()
+        }).unwrap_or_else(|| {
+            warn!("CONFIG_CACHE empty, loading from disk (this shouldn't happen during normal startup)");
+            Config::load().unwrap_or_default()
+        });
+        
+        // Find selected profile index
+        let selected_profile_idx = config.profiles
+            .iter()
+            .position(|p| p.name == config.global.selected_profile)
+            .unwrap_or(0);
+
+        // Create tray profile cache with initial state
+        #[cfg(target_os = "linux")]
+        let tray_profile_cache = {
+            let profile_names: Vec<String> = config.profiles.iter()
+                .map(|p| p.name.clone())
+                .collect();
+            std::sync::Arc::new(std::sync::Mutex::new((selected_profile_idx, profile_names)))
+        };
+        #[cfg(target_os = "linux")]
+        let tray_cache_clone = tray_profile_cache.clone();
+
         // Spawn Tokio thread for ksni tray
         #[cfg(target_os = "linux")]
         let shutdown_signal = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -216,6 +241,7 @@ impl ManagerApp {
             runtime.block_on(async move {
                 let tray = AppTray {
                     tx: tx_to_app,
+                    cached_profiles: tray_cache_clone,
                 };
                 
                 match tray.spawn().await {
@@ -234,15 +260,6 @@ impl ManagerApp {
                 }
             });
         });
-
-        // Load configuration
-        let config = Config::load().unwrap_or_default();
-        
-        // Find selected profile index
-        let selected_profile_idx = config.profiles
-            .iter()
-            .position(|p| p.name == config.global.selected_profile)
-            .unwrap_or(0);
 
         // Initialize hotkey settings state with current profile
         let mut hotkey_settings_state = components::hotkey_settings::HotkeySettingsState::default();
@@ -267,6 +284,7 @@ impl ManagerApp {
             ipc_event_rx,
             ipc_event_tx: ipc_event_sender.clone(),
             tray_rx,
+            tray_profile_cache,
             shutdown_signal,
             should_quit: false,
             config,
@@ -354,22 +372,13 @@ impl ManagerApp {
         let mut client = client.unwrap();
         info!("Connected to preview process via IPC");
         
-        // Send initial configuration
+        // Send complete configuration in one message
         let profile = self.config.profiles[self.selected_profile_idx].clone();
-        let resp = client.request(PreviewRequest::UpdateProfile(profile))
-            .context("Failed to send initial profile to preview process")?;
+        let global = self.config.global.clone();
+        let resp = client.request(PreviewRequest::SetProfile { profile, global })
+            .context("Failed to send configuration to preview process")?;
         match resp {
-            PreviewResponse::Ready => info!("Preview process accepted profile"),
-            _ => warn!(response = ?resp, "Unexpected response from preview process"),
-        }
-        
-        // Send global settings
-        let resp = client.request(PreviewRequest::UpdateGlobalSettings(
-            self.config.global.clone()
-        ))
-        .context("Failed to send global settings to preview process")?;
-        match resp {
-            PreviewResponse::Ready => info!("Preview process accepted global settings"),
+            PreviewResponse::Ready => info!("Preview process received configuration via IPC"),
             _ => warn!(response = ?resp, "Unexpected response from preview process"),
         }
         
@@ -457,6 +466,16 @@ impl ManagerApp {
         self.restart_daemon();
     }
 
+    /// Update the tray icon's cached profile list
+    /// Call this whenever config.profiles or selected_profile_idx changes
+    #[cfg(target_os = "linux")]
+    fn update_tray_cache(&self) {
+        let profile_names: Vec<String> = self.config.profiles.iter()
+            .map(|p| p.name.clone())
+            .collect();
+        *self.tray_profile_cache.lock().unwrap() = (self.selected_profile_idx, profile_names);
+    }
+
     fn save_config(&mut self) -> Result<()> {
         // Load fresh config from disk (has all characters including daemon's additions)
         let mut disk_config = Config::load().unwrap_or_else(|_| self.config.clone());
@@ -521,6 +540,10 @@ impl ManagerApp {
             .position(|p| p.name == self.config.global.selected_profile)
             .unwrap_or(0);
         
+        // Update tray cache with reloaded config
+        #[cfg(target_os = "linux")]
+        self.update_tray_cache();
+        
         self.settings_changed = false;
         self.status_message = Some(StatusMessage {
             text: "Changes discarded".to_string(),
@@ -583,6 +606,10 @@ impl ManagerApp {
                         self.config.global.selected_profile = 
                             self.config.profiles[idx].name.clone();
                         self.selected_profile_idx = idx;
+                        
+                        // Update tray cache immediately
+                        #[cfg(target_os = "linux")]
+                        self.update_tray_cache();
                         
                         // Save config with new selection
                         if let Err(err) = self.save_config() {
@@ -911,10 +938,16 @@ fn load_window_icon() -> Result<egui::IconData> {
 }
 
 pub fn run_gui() -> Result<()> {
-    // Load config to get window dimensions
+    // Load config ONCE at startup
     let config = Config::load().unwrap_or_default();
     let window_width = config.global.window_width as f32;
     let window_height = config.global.window_height as f32;
+    
+    // Store config in thread-local for ManagerApp::new() to access
+    // This eliminates the second Config::load() call
+    CONFIG_CACHE.with(|cache| {
+        *cache.borrow_mut() = Some(config);
+    });
     
     #[cfg(target_os = "linux")]
     let icon = match load_window_icon() {

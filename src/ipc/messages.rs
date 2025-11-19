@@ -9,11 +9,12 @@ use crate::types::CharacterSettings;
 /// Requests sent from GUI to Preview process
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum PreviewRequest {
-    /// Update the active profile (visual settings + cycle group)
-    UpdateProfile(Profile),
-    
-    /// Update global settings (snap threshold, hide behavior, etc.)
-    UpdateGlobalSettings(GlobalSettings),
+    /// Initialize or update preview with complete configuration
+    /// Preview daemon should use these settings instead of loading from file
+    SetProfile {
+        profile: Profile,
+        global: GlobalSettings,
+    },
     
     /// Query current character positions
     GetPositions,

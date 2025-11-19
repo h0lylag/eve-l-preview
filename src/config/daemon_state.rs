@@ -57,6 +57,18 @@ impl PersistentState {
         path
     }
 
+    /// Create empty state (will be populated via IPC SetProfile message)
+    /// This is used by the preview daemon when starting - it waits for GUI to send config
+    pub fn empty() -> Self {
+        use crate::config::profile::{GlobalSettings, Profile};
+        
+        PersistentState {
+            profile: Profile::empty(),
+            global: GlobalSettings::empty(),
+            character_positions: HashMap::new(),
+        }
+    }
+
     /// Get default thumbnail dimensions for screen size
     pub fn default_thumbnail_size(&self, _screen_width: u16, _screen_height: u16) -> (u16, u16) {
         // Use configured default dimensions from global settings

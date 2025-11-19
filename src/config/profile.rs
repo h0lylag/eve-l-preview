@@ -171,6 +171,26 @@ impl Default for GlobalSettings {
     }
 }
 
+impl GlobalSettings {
+    /// Create empty GlobalSettings (will be populated via IPC)
+    pub fn empty() -> Self {
+        Self {
+            selected_profile: String::new(),
+            window_width: 0,
+            window_height: 0,
+            window_x: None,
+            window_y: None,
+            minimize_clients_on_switch: false,
+            hotkey_require_eve_focus: false,
+            hide_when_no_focus: false,
+            snap_threshold: 0,
+            preserve_thumbnail_position_on_swap: false,
+            default_thumbnail_width: 0,
+            default_thumbnail_height: 0,
+        }
+    }
+}
+
 impl Profile {
     /// Create a new profile with default values and the given name
     pub fn default_with_name(name: String, description: String) -> Self {
@@ -178,6 +198,25 @@ impl Profile {
         profile.name = name;
         profile.description = description;
         profile
+    }
+    
+    /// Create empty Profile (will be populated via IPC)
+    pub fn empty() -> Self {
+        Self {
+            name: String::new(),
+            description: String::new(),
+            opacity_percent: 0,
+            border_enabled: false,
+            border_size: 0,
+            border_color: String::new(),
+            text_size: 0,
+            text_x: 0,
+            text_y: 0,
+            text_color: String::new(),
+            text_font_family: String::new(),
+            cycle_group: Vec::new(),
+            character_positions: HashMap::new(),
+        }
     }
 }
 

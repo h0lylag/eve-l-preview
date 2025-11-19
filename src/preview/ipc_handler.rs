@@ -92,18 +92,12 @@ fn run_ipc_loop(
             };
             
             match recv_result {
-                Ok(PreviewRequest::UpdateProfile(profile)) => {
-                    debug!(profile = %profile.name, "Received profile update");
+                Ok(PreviewRequest::SetProfile { profile, global }) => {
+                    info!(profile = %profile.name, "Received profile configuration via IPC");
                     let mut state = state.lock().unwrap();
                     state.profile = profile;
-                    // TODO: Trigger thumbnail re-render with new settings
-                    client.lock().unwrap().send_response(&PreviewResponse::Ready)?;
-                }
-
-                Ok(PreviewRequest::UpdateGlobalSettings(global)) => {
-                    debug!("Received global settings update");
-                    let mut state = state.lock().unwrap();
                     state.global = global;
+                    // TODO: Trigger thumbnail re-render with new settings
                     client.lock().unwrap().send_response(&PreviewResponse::Ready)?;
                 }
 
