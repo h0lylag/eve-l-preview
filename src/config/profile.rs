@@ -12,15 +12,6 @@ use tracing::info;
 
 use crate::types::CharacterSettings;
 
-/// Strategy for saving configuration files
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SaveStrategy {
-    /// Preserve character_positions entries already on disk (GUI edits)
-    PreserveCharacterPositions,
-    /// Overwrite character_positions with in-memory data (daemon updates)
-    OverwriteCharacterPositions,
-}
-
 /// Top-level configuration with profile support
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -219,8 +210,9 @@ impl Config {
         Ok(config)
     }
     
-    /// Save configuration to JSON file using chosen strategy
-    pub fn save_with_strategy(&self, strategy: SaveStrategy) -> Result<()> {
+    /// Save configuration to JSON file
+    /// GUI is now the single source of truth for all config writes (including character positions)
+    pub fn save(&self) -> Result<()> {
         let config_path = Self::path();
         
         // Ensure config directory exists
@@ -229,31 +221,7 @@ impl Config {
                 .with_context(|| format!("Failed to create config directory {:?}", parent))?;
         }
         
-        let config_to_save = match strategy {
-            SaveStrategy::PreserveCharacterPositions => {
-                let mut clone = self.clone();
-                if config_path.exists() {
-                    if let Ok(contents) = fs::read_to_string(&config_path) {
-                        if let Ok(existing_config) = serde_json::from_str::<Config>(&contents) {
-                            for profile_to_save in clone.profiles.iter_mut() {
-                                if let Some(existing_profile) = existing_config.profiles.iter()
-                                    .find(|p| p.name == profile_to_save.name)
-                                {
-                                    // Profile exists on disk - preserve its character positions
-                                    profile_to_save.character_positions = existing_profile.character_positions.clone();
-                                }
-                                // If profile doesn't exist on disk (new/duplicated profile),
-                                // keep the character_positions from the in-memory profile (from clone/duplication)
-                            }
-                        }
-                    }
-                }
-                clone
-            }
-            SaveStrategy::OverwriteCharacterPositions => self.clone(),
-        };
-        
-        let json_string = serde_json::to_string_pretty(&config_to_save)
+        let json_string = serde_json::to_string_pretty(self)
             .context("Failed to serialize config to JSON")?;
         
         fs::write(&config_path, json_string)
@@ -261,11 +229,6 @@ impl Config {
         
         info!("Saved config to {:?}", config_path);
         Ok(())
-    }
-
-    /// Convenience helper: save preserving character positions (GUI default)
-    pub fn save(&self) -> Result<()> {
-        self.save_with_strategy(SaveStrategy::PreserveCharacterPositions)
     }
 }
 

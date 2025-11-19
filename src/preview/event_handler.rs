@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use x11rb::connection::Connection;
 use x11rb::protocol::damage::ConnectionExt as DamageExt;
 use x11rb::protocol::Event::{self, CreateNotify, DamageNotify, DestroyNotify, PropertyNotify};
@@ -8,13 +9,72 @@ use tracing::{debug, info, trace, warn};
 
 use crate::config::PersistentState;
 use crate::constants::mouse;
-use crate::types::{Position, ThumbnailState};
+use crate::ipc::PreviewResponse;
+use crate::preview::ipc_handler::ClientConnection;
+use crate::types::{Position, ThumbnailState, CharacterSettings};
 use crate::x11_utils::{is_window_eve, minimize_window, AppContext};
 
 use super::cycle_state::CycleState;
 use super::session_state::SessionState;
 use super::snapping::{self, Rect};
 use super::thumbnail::Thumbnail;
+
+/// Send position update event to GUI via IPC
+fn send_position_changed(
+    ipc_client: &Option<Arc<Mutex<ClientConnection>>>,
+    character_name: &str,
+    x: i16,
+    y: i16,
+    width: u16,
+    height: u16,
+) {
+    if let Some(client) = ipc_client {
+        let response = PreviewResponse::PositionChanged {
+            character: character_name.to_string(),
+            x,
+            y,
+            width,
+            height,
+        };
+        
+        if let Ok(mut client_lock) = client.lock() {
+            if let Err(e) = client_lock.send_response(&response) {
+                warn!(error = ?e, character = %character_name, "Failed to send PositionChanged via IPC");
+            } else {
+                debug!(character = %character_name, x = x, y = y, "Sent PositionChanged via IPC");
+            }
+        }
+    }
+}
+
+/// Send character added event to GUI via IPC
+fn send_character_added(
+    ipc_client: &Option<Arc<Mutex<ClientConnection>>>,
+    character_name: &str,
+    x: i16,
+    y: i16,
+    width: u16,
+    height: u16,
+) {
+    if let Some(client) = ipc_client {
+        let response = PreviewResponse::CharacterAdded {
+            character: character_name.to_string(),
+            x,
+            y,
+            width,
+            height,
+        };
+        
+        if let Ok(mut client_lock) = client.lock() {
+            if let Err(e) = client_lock.send_response(&response) {
+                warn!(error = ?e, character = %character_name, "Failed to send CharacterAdded via IPC");
+            } else {
+                info!(character = %character_name, x = x, y = y, "Sent CharacterAdded via IPC");
+            }
+        }
+    }
+}
+
 
 /// Handle DamageNotify events - update damaged thumbnail
 #[tracing::instrument(skip(ctx, eves))]
@@ -35,7 +95,7 @@ fn handle_damage_notify(ctx: &AppContext, eves: &HashMap<Window, Thumbnail>, eve
 }
 
 /// Handle CreateNotify events - create thumbnail for new EVE window
-#[tracing::instrument(skip(ctx, persistent_state, eves, session_state, cycle_state, check_and_create_window))]
+#[tracing::instrument(skip(ctx, persistent_state, eves, session_state, cycle_state, check_and_create_window, ipc_client))]
 fn handle_create_notify<'a>(
     ctx: &AppContext<'a>,
     persistent_state: &mut PersistentState,
@@ -44,6 +104,7 @@ fn handle_create_notify<'a>(
     session_state: &SessionState,
     cycle_state: &mut CycleState,
     check_and_create_window: &impl Fn(&AppContext<'a>, &PersistentState, Window, &SessionState) -> Result<Option<Thumbnail<'a>>>,
+    ipc_client: &Option<Arc<Mutex<ClientConnection>>>,
 ) -> Result<()> {
     debug!(window = event.window, "CreateNotify received");
     if let Some(thumbnail) = check_and_create_window(ctx, persistent_state, event.window, session_state)
@@ -51,22 +112,27 @@ fn handle_create_notify<'a>(
         // Register with cycle state
         info!(window = event.window, character = %thumbnail.character_name, "Created thumbnail for new EVE window");
         
-        // Save initial position and dimensions for new character
         // Query geometry to get actual position from X11
         let geom = ctx.conn.get_geometry(thumbnail.window)
             .context("Failed to query geometry for new thumbnail")?
             .reply()
             .context("Failed to get geometry reply for new thumbnail")?;
         
-        // Save initial position to disk when new character window appears
-        persistent_state.update_position(
+        // Update in-memory state (don't save to disk - GUI will do that via IPC)
+        persistent_state.character_positions.insert(
+            thumbnail.character_name.clone(),
+            CharacterSettings::new(geom.x, geom.y, thumbnail.dimensions.width, thumbnail.dimensions.height),
+        );
+        
+        // Send CharacterAdded event to GUI via IPC
+        send_character_added(
+            ipc_client,
             &thumbnail.character_name,
             geom.x,
             geom.y,
             thumbnail.dimensions.width,
             thumbnail.dimensions.height,
-        )
-        .context(format!("Failed to save initial position for new character '{}'", thumbnail.character_name))?;
+        );
         
         cycle_state.add_window(thumbnail.character_name.clone(), event.window);
         eves.insert(event.window, thumbnail);
@@ -208,13 +274,14 @@ fn handle_button_press(
 }
 
 /// Handle ButtonRelease events - focus window and save position after drag
-#[tracing::instrument(skip(ctx, persistent_state, eves, session_state))]
+#[tracing::instrument(skip(ctx, persistent_state, eves, session_state, ipc_client))]
 fn handle_button_release(
     ctx: &AppContext,
     persistent_state: &mut PersistentState,
     eves: &mut HashMap<Window, Thumbnail>,
     event: ButtonReleaseEvent,
     session_state: &mut SessionState,
+    ipc_client: &Option<Arc<Mutex<ClientConnection>>>,
 ) -> Result<()> {
     debug!(x = event.root_x, y = event.root_y, detail = event.detail, "ButtonRelease received");
     
@@ -248,8 +315,8 @@ fn handle_button_release(
                 .context(format!("Failed to focus window for '{}'", thumbnail.character_name))?;
         }
         
-        // Save position after drag ends (right-click release)
-        // This saves to disk ONCE per drag operation, not during motion events
+        // Send position update via IPC after drag ends (right-click release)
+        // GUI will save to disk - preview process only updates in-memory state
         if thumbnail.input_state.dragging {
             // Query actual position from X11
             let geom = ctx.conn.get_geometry(thumbnail.window)
@@ -260,15 +327,22 @@ fn handle_button_release(
             // Update session state (in-memory only)
             session_state.update_window_position(thumbnail.window, geom.x, geom.y);
             debug!(window = thumbnail.window, x = geom.x, y = geom.y, "Saved session position after drag");
-            // Persist character position AND dimensions to disk (single write per drag)
-            persistent_state.update_position(
+            
+            // Update in-memory character positions (don't save to disk)
+            persistent_state.character_positions.insert(
+                thumbnail.character_name.clone(),
+                CharacterSettings::new(geom.x, geom.y, thumbnail.dimensions.width, thumbnail.dimensions.height),
+            );
+            
+            // Send PositionChanged event to GUI via IPC
+            send_position_changed(
+                ipc_client,
                 &thumbnail.character_name,
                 geom.x,
                 geom.y,
                 thumbnail.dimensions.width,
                 thumbnail.dimensions.height,
-            )
-            .context(format!("Failed to save position for '{}' after drag", thumbnail.character_name))?;
+            );
         }
         
         // Clear dragging state and free cached snap targets
@@ -381,15 +455,16 @@ pub fn handle_event<'a>(
     session_state: &mut SessionState,
     cycle_state: &mut CycleState,
     check_and_create_window: impl Fn(&AppContext<'a>, &PersistentState, Window, &SessionState) -> Result<Option<Thumbnail<'a>>>,
+    ipc_client: &Option<Arc<Mutex<ClientConnection>>>,
 ) -> Result<()> {
     match event {
         DamageNotify(event) => handle_damage_notify(ctx, eves, event),
-        CreateNotify(event) => handle_create_notify(ctx, persistent_state, eves, event, session_state, cycle_state, &check_and_create_window),
+        CreateNotify(event) => handle_create_notify(ctx, persistent_state, eves, event, session_state, cycle_state, &check_and_create_window, ipc_client),
         DestroyNotify(event) => handle_destroy_notify(eves, event, cycle_state),
         Event::FocusIn(event) => handle_focus_in(ctx, eves, event),
         Event::FocusOut(event) => handle_focus_out(ctx, eves, event),
         Event::ButtonPress(event) => handle_button_press(ctx, eves, event, cycle_state),
-        Event::ButtonRelease(event) => handle_button_release(ctx, persistent_state, eves, event, session_state),
+        Event::ButtonRelease(event) => handle_button_release(ctx, persistent_state, eves, event, session_state, ipc_client),
         Event::MotionNotify(event) => handle_motion_notify(persistent_state, eves, event),
         PropertyNotify(event) => {
             if event.atom == ctx.atoms.wm_name
@@ -411,16 +486,50 @@ pub fn handle_event<'a>(
                 // Update cycle state with new character name
                 cycle_state.update_character(event.window, new_character_name.to_string());
                 
-                // Handle character swap: updates position mapping in config and saves to disk
-                // Returns either preserved position (if configured) or current position
-                let new_position = persistent_state.handle_character_change(
-                    &old_name,
-                    &new_character_name,
-                    current_pos,
-                    thumbnail.dimensions.width,
-                    thumbnail.dimensions.height,
-                )
-                .context(format!("Failed to handle character change from '{}' to '{}'", old_name, new_character_name))?;
+                // Save old character's position (in-memory only, no disk write)
+                if !old_name.is_empty() {
+                    persistent_state.character_positions.insert(
+                        old_name.clone(),
+                        CharacterSettings::new(current_pos.x, current_pos.y, thumbnail.dimensions.width, thumbnail.dimensions.height),
+                    );
+                    
+                    // Send position update for old character via IPC
+                    send_position_changed(
+                        ipc_client,
+                        &old_name,
+                        current_pos.x,
+                        current_pos.y,
+                        thumbnail.dimensions.width,
+                        thumbnail.dimensions.height,
+                    );
+                }
+                
+                // Determine new position: use saved position if available, otherwise keep current
+                let new_position = if !new_character_name.is_empty() {
+                    if let Some(settings) = persistent_state.character_positions.get(new_character_name) {
+                        info!(character = %new_character_name, x = settings.x, y = settings.y, "Moving to saved position for character");
+                        Some(settings.position())
+                    } else {
+                        // New character with no saved position - add it
+                        persistent_state.character_positions.insert(
+                            new_character_name.to_string(),
+                            CharacterSettings::new(current_pos.x, current_pos.y, thumbnail.dimensions.width, thumbnail.dimensions.height),
+                        );
+                        
+                        // Send CharacterAdded for new character via IPC
+                        send_character_added(
+                            ipc_client,
+                            &new_character_name,
+                            current_pos.x,
+                            current_pos.y,
+                            thumbnail.dimensions.width,
+                            thumbnail.dimensions.height,
+                        );
+                        None
+                    }
+                } else {
+                    None
+                };
                 
                 // Update session state
                 session_state.update_window_position(event.window, current_pos.x, current_pos.y);
@@ -433,24 +542,29 @@ pub fn handle_event<'a>(
                 && let Some(thumbnail) = check_and_create_window(ctx, persistent_state, event.window, session_state)
                     .context(format!("Failed to create thumbnail for newly detected EVE window {}", event.window))?
             {
-                // New EVE window detected
+                // New EVE window detected via property change (EVE → EVE - CharacterName)
                 
-                // Save initial position and dimensions for newly detected character
-                // (Happens when EVE window title changes from "EVE" to "EVE - CharacterName")
+                // Query geometry for newly detected character
                 let geom = ctx.conn.get_geometry(thumbnail.window)
                     .context("Failed to query geometry for newly detected thumbnail")?
                     .reply()
                     .context("Failed to get geometry reply for newly detected thumbnail")?;
                 
-                // Save to disk when character name becomes known
-                persistent_state.update_position(
+                // Update in-memory state (don't save to disk)
+                persistent_state.character_positions.insert(
+                    thumbnail.character_name.clone(),
+                    CharacterSettings::new(geom.x, geom.y, thumbnail.dimensions.width, thumbnail.dimensions.height),
+                );
+                
+                // Send CharacterAdded event to GUI via IPC
+                send_character_added(
+                    ipc_client,
                     &thumbnail.character_name,
                     geom.x,
                     geom.y,
                     thumbnail.dimensions.width,
                     thumbnail.dimensions.height,
-                )
-                .context(format!("Failed to save initial position for newly detected character '{}'", thumbnail.character_name))?;
+                );
                 
                 cycle_state.add_window(thumbnail.character_name.clone(), event.window);
                 eves.insert(event.window, thumbnail);

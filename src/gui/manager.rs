@@ -14,8 +14,9 @@ use ksni::TrayMethods;
 
 use super::components;
 use crate::constants::gui::*;
-use crate::config::profile::{Config, SaveStrategy};
+use crate::config::profile::Config;
 use crate::gui::components::profile_selector::{ProfileSelector, ProfileAction};
+use crate::ipc::{PreviewClient, PreviewRequest, PreviewResponse};
 
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,9 +152,12 @@ struct StatusMessage {
 
 struct ManagerApp {
     daemon: Option<Child>,
+    daemon_client: Option<PreviewClient>,
     daemon_status: DaemonStatus,
     last_health_check: Instant,
     status_message: Option<StatusMessage>,
+    ipc_event_rx: Receiver<PreviewResponse>,
+    ipc_event_tx: Sender<PreviewResponse>,
     #[cfg(target_os = "linux")]
     tray_rx: Receiver<TrayMessage>,
     #[cfg(target_os = "linux")]
@@ -247,12 +251,21 @@ impl ManagerApp {
         // Initialize visual settings state
         let visual_settings_state = components::visual_settings::VisualSettingsState::default();
 
+        // Create channel for receiving IPC events from preview process
+        let (ipc_event_tx, ipc_event_rx) = mpsc::channel();
+        
+        // Store the sender for use when starting daemon
+        let ipc_event_sender = ipc_event_tx;
+
         #[cfg(target_os = "linux")]
         let mut app = Self {
             daemon: None,
+            daemon_client: None,
             daemon_status: DaemonStatus::Stopped,
             last_health_check: Instant::now(),
             status_message: None,
+            ipc_event_rx,
+            ipc_event_tx: ipc_event_sender.clone(),
             tray_rx,
             shutdown_signal,
             should_quit: false,
@@ -268,9 +281,12 @@ impl ManagerApp {
         #[cfg(not(target_os = "linux"))]
         let mut app = Self {
             daemon: None,
+            daemon_client: None,
             daemon_status: DaemonStatus::Stopped,
             last_health_check: Instant::now(),
             status_message: None,
+            ipc_event_rx,
+            ipc_event_tx: ipc_event_sender,
             should_quit: false,
             config,
             selected_profile_idx,
@@ -299,31 +315,126 @@ impl ManagerApp {
 
         let child = spawn_preview_daemon()?;
         let pid = child.id();
-        info!(pid, "Started preview daemon");
+        info!(pid, "Started preview process");
 
         self.daemon = Some(child);
         self.daemon_status = DaemonStatus::Starting;
         self.status_message = Some(StatusMessage {
-            text: format!("Preview daemon starting (PID: {pid})"),
+            text: format!("Preview process starting (PID: {pid})"),
             color: STATUS_STARTING,
         });
+        
+        // Wait for socket to appear (with timeout)
+        let socket_path = crate::ipc::default_socket_path()?;
+        let start = Instant::now();
+        while !socket_path.exists() {
+            if start.elapsed() > Duration::from_secs(5) {
+                return Err(anyhow!("Preview socket did not appear within 5 seconds"));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        
+        // Socket exists, now try to connect (with retries - listener might not be accepting yet)
+        let mut client = None;
+        let connect_start = Instant::now();
+        while client.is_none() {
+            if connect_start.elapsed() > Duration::from_secs(3) {
+                return Err(anyhow!("Failed to connect to preview socket within 3 seconds"));
+            }
+            match PreviewClient::connect() {
+                Ok(c) => {
+                    client = Some(c);
+                    break;
+                }
+                Err(_) => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+        let mut client = client.unwrap();
+        info!("Connected to preview process via IPC");
+        
+        // Send initial configuration
+        let profile = self.config.profiles[self.selected_profile_idx].clone();
+        let resp = client.request(PreviewRequest::UpdateProfile(profile))
+            .context("Failed to send initial profile to preview process")?;
+        match resp {
+            PreviewResponse::Ready => info!("Preview process accepted profile"),
+            _ => warn!(response = ?resp, "Unexpected response from preview process"),
+        }
+        
+        // Send global settings
+        let resp = client.request(PreviewRequest::UpdateGlobalSettings(
+            self.config.global.clone()
+        ))
+        .context("Failed to send global settings to preview process")?;
+        match resp {
+            PreviewResponse::Ready => info!("Preview process accepted global settings"),
+            _ => warn!(response = ?resp, "Unexpected response from preview process"),
+        }
+        
+        self.daemon_client = Some(client);
+        
+        // Spawn background thread to listen for unsolicited IPC events (position updates, etc.)
+        let event_tx = self.ipc_event_tx.clone();
+        std::thread::spawn(move || {
+            // Connect a second time for event listening
+            match PreviewClient::connect() {
+                Ok(mut event_client) => {
+                    info!("IPC event listener connected");
+                    loop {
+                        match event_client.recv_response() {
+                            Ok(response) => {
+                                if event_tx.send(response).is_err() {
+                                    warn!("GUI event receiver dropped, stopping IPC listener");
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                warn!(error = ?e, "IPC event listener disconnected");
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(error = ?e, "Failed to connect IPC event listener");
+                }
+            }
+        });
+        
+        self.daemon_status = DaemonStatus::Running;
+        self.status_message = Some(StatusMessage {
+            text: format!("Preview process running (PID: {pid})"),
+            color: STATUS_RUNNING,
+        });
+        
         Ok(())
     }
 
     fn stop_daemon(&mut self) -> Result<()> {
+        // Send shutdown via IPC first (graceful shutdown)
+        if let Some(mut client) = self.daemon_client.take() {
+            let _ = client.send_request(&PreviewRequest::Shutdown);
+            info!("Sent shutdown request to preview process via IPC");
+        }
+        
         if let Some(mut child) = self.daemon.take() {
-            info!(pid = child.id(), "Stopping preview daemon");
+            info!(pid = child.id(), "Stopping preview process");
+            // Give it a moment to shutdown gracefully
+            std::thread::sleep(Duration::from_millis(100));
+            // Force kill if still running
             let _ = child.kill();
             let status = child
                 .wait()
-                .context("Failed to wait for preview daemon exit")?;
+                .context("Failed to wait for preview process exit")?;
             self.daemon_status = if status.success() {
                 DaemonStatus::Stopped
             } else {
                 DaemonStatus::Crashed(status.code())
             };
             self.status_message = Some(StatusMessage {
-                text: "Preview daemon stopped".to_string(),
+                text: "Preview process stopped".to_string(),
                 color: STATUS_STOPPED,
             });
         }
@@ -386,7 +497,7 @@ impl ManagerApp {
         disk_config.global = self.config.global.clone();
         
         // Save the merged config
-        disk_config.save_with_strategy(SaveStrategy::OverwriteCharacterPositions)
+        disk_config.save()
             .context("Failed to save configuration")?;
         
         // Reload config to include daemon's new characters in GUI memory
@@ -418,26 +529,6 @@ impl ManagerApp {
         info!("Configuration changes discarded");
     }
 
-    fn reload_character_list(&mut self) {
-        // Load fresh config from disk to get daemon's new characters
-        if let Ok(disk_config) = Config::load() {
-            // Merge new characters from disk into GUI config without losing GUI changes
-            for (profile_idx, gui_profile) in self.config.profiles.iter_mut().enumerate() {
-                if let Some(disk_profile) = disk_config.profiles.get(profile_idx) {
-                    if disk_profile.name == gui_profile.name {
-                        // Add any new characters from disk that GUI doesn't know about
-                        for (char_name, char_settings) in &disk_profile.character_positions {
-                            if !gui_profile.character_positions.contains_key(char_name) {
-                                gui_profile.character_positions.insert(char_name.clone(), char_settings.clone());
-                                info!(character = %char_name, profile = %gui_profile.name, "Detected new character from daemon");
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     fn poll_daemon(&mut self) {
         if self.last_health_check.elapsed() < Duration::from_millis(DAEMON_CHECK_INTERVAL_MS) {
             return;
@@ -466,8 +557,7 @@ impl ManagerApp {
                             text: "Preview daemon running".to_string(),
                             color: STATUS_RUNNING,
                         });
-                        // Reload config when daemon transitions to running to pick up any new characters
-                        self.reload_character_list();
+                        // Daemon started successfully - IPC event listener will handle new characters
                     }
                 }
                 Err(err) => {
@@ -510,6 +600,58 @@ impl ManagerApp {
                 TrayMessage::Quit => {
                     info!("Quit requested from tray menu");
                     self.should_quit = true;
+                }
+            }
+        }
+    }
+
+    fn poll_ipc_events(&mut self) {
+        // Process all pending IPC events from preview process
+        while let Ok(event) = self.ipc_event_rx.try_recv() {
+            match event {
+                PreviewResponse::PositionChanged { character, x, y, width, height } => {
+                    info!(character = %character, x = x, y = y, "Received PositionChanged event via IPC");
+                    
+                    // Update character position in current profile
+                    let profile = &mut self.config.profiles[self.selected_profile_idx];
+                    let settings = crate::types::CharacterSettings::new(x, y, width, height);
+                    profile.character_positions.insert(character, settings);
+                    
+                    // Save config to disk (GUI owns file writes now)
+                    if let Err(e) = self.config.save() {
+                        warn!(error = ?e, "Failed to save config after position update");
+                    }
+                }
+                
+                PreviewResponse::CharacterAdded { character, x, y, width, height } => {
+                    info!(character = %character, x = x, y = y, "Received CharacterAdded event via IPC");
+                    
+                    // Add new character to current profile
+                    let profile = &mut self.config.profiles[self.selected_profile_idx];
+                    let settings = crate::types::CharacterSettings::new(x, y, width, height);
+                    profile.character_positions.insert(character.clone(), settings);
+                    
+                    // Add to cycle group if not already present
+                    if !profile.cycle_group.contains(&character) {
+                        profile.cycle_group.push(character.clone());
+                        // Reload hotkey settings UI to reflect the change
+                        self.hotkey_settings_state.load_from_profile(profile);
+                    }
+                    
+                    // Save config to disk
+                    if let Err(e) = self.config.save() {
+                        warn!(error = ?e, "Failed to save config after adding character");
+                    }
+                }
+                
+                PreviewResponse::CharacterRemoved(character) => {
+                    info!(character = %character, "Received CharacterRemoved event via IPC");
+                    // Note: We don't remove from config - preserve positions for when they log back in
+                }
+                
+                // Ignore response-only messages (these shouldn't come unsolicited)
+                PreviewResponse::Ready | PreviewResponse::Pong | PreviewResponse::Positions(_) | PreviewResponse::Error(_) => {
+                    warn!(response = ?event, "Received unexpected IPC response (not an event)");
                 }
             }
         }
@@ -587,6 +729,7 @@ impl eframe::App for ManagerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_daemon();
         self.poll_tray_events();
+        self.poll_ipc_events();
 
         // Request repaint after short delay to poll for tray events even when unfocused
         // This ensures tray menu actions are processed promptly
@@ -620,10 +763,7 @@ impl eframe::App for ManagerApp {
                 ui.selectable_value(&mut self.active_tab, ActiveTab::GlobalSettings, "⚙ Global Settings");
                 ui.selectable_value(&mut self.active_tab, ActiveTab::ProfileSettings, "📋 Profile Settings");
                 
-                // When switching to Profile Settings tab, reload character list to pick up new characters
-                if self.active_tab == ActiveTab::ProfileSettings && prev_tab != ActiveTab::ProfileSettings {
-                    self.reload_character_list();
-                }
+                // Tab switched - IPC event listener handles new character discovery automatically
             });
 
             ui.add_space(SECTION_SPACING);
