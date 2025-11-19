@@ -9,33 +9,33 @@ use std::ffi::CString;
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
-/// Get list of all available font families on the system
-pub fn list_font_families() -> Result<Vec<String>> {
-    let fc = Fontconfig::new().context("Failed to initialize fontconfig")?;
-    
-    // Create empty pattern to match all fonts
-    let pattern = Pattern::new(&fc);
-    
-    // List all fonts with family names
-    let font_set = fontconfig::list_fonts(&pattern, None);
-    
-    // Extract unique family names (use BTreeSet for sorted results)
-    let mut families = BTreeSet::new();
-    
-    for font_pattern in font_set.iter() {
-        // Get family name using FC_FAMILY constant (already a &CStr)
-        if let Some(family) = font_pattern.get_string(fontconfig::FC_FAMILY) {
-            families.insert(family.to_string());
-        }
-    }
-    
-    debug!(
-        count = families.len(),
-        "Discovered font families via fontconfig"
-    );
-    
-    Ok(families.into_iter().collect())
-}
+/// Common font style names for parsing family+style strings
+/// Order matters: longer/more specific styles must come first to avoid substring matches
+/// (e.g., "SemiBold Italic" must be checked before "Bold Italic")
+const KNOWN_STYLES: &[&str] = &[
+    "Condensed Bold Italic",
+    "Condensed Bold",
+    "SemiBold Italic",
+    "Bold Italic",
+    "Bold Oblique",
+    "Black Italic",
+    "Medium Italic",
+    "Light Italic",
+    "Thin Italic",
+    "ExtraBold",
+    "ExtraLight",
+    "SemiBold",
+    "Italic",
+    "Oblique",
+    "Bold",
+    "Light",
+    "Medium",
+    "Black",
+    "Thin",
+    "Regular",
+    "Condensed",
+    "Expanded",
+];
 
 /// Get list of all individual fonts with their full names (e.g., "Roboto Mono Regular", "DejaVu Sans Bold")
 /// This provides more granular control than just font families
@@ -85,21 +85,12 @@ pub fn list_fonts() -> Result<Vec<String>> {
 pub fn find_font_path(font_name: &str) -> Result<PathBuf> {
     let fc = Fontconfig::new().context("Failed to initialize fontconfig")?;
     
-    // Common styles for style extraction (longest/most specific first to match correctly)
-    // IMPORTANT: Order matters! "SemiBold Italic" must come before "Bold Italic" to avoid substring matches
-    let known_styles = [
-        "Condensed Bold Italic", "Condensed Bold", "SemiBold Italic", "Bold Italic", "Bold Oblique",
-        "Black Italic", "Medium Italic", "Light Italic", "Thin Italic", "ExtraBold",
-        "ExtraLight", "SemiBold", "Italic", "Oblique", "Bold", "Light", "Medium", "Black",
-        "Thin", "Regular", "Condensed", "Expanded"
-    ];
-    
     let mut family_name = font_name;
     let mut style_name: Option<&str> = None;
     
-    // Try to extract style from font name
+    // Try to extract style from font name using known style names
     // Must check that style is preceded by space to avoid substring matches (e.g., "SemiBold" vs "Bold")
-    for style in &known_styles {
+    for style in KNOWN_STYLES {
         if let Some(style_pos) = font_name.rfind(style) {
             // Check if this is at the end and preceded by a space (or is the whole string)
             if style_pos + style.len() == font_name.len() {
@@ -176,34 +167,9 @@ pub fn find_font_path(font_name: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Get default monospace font (for backward compatibility)
-pub fn get_default_monospace_font() -> Result<PathBuf> {
-    // Try "Monospace" generic family first
-    find_font_path("Monospace")
-        .or_else(|_| find_font_path("DejaVu Sans Mono"))
-        .or_else(|_| find_font_path("Liberation Mono"))
-        .or_else(|_| find_font_path("Courier New"))
-        .context("Could not find any monospace font")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_list_font_families() {
-        // This test requires fontconfig to be installed on the system
-        // May fail in nix sandbox without fontconfig access
-        if let Ok(families) = list_font_families() {
-            assert!(!families.is_empty(), "Should find at least one font family");
-            println!("Found {} font families", families.len());
-            
-            // Print first 10 for debugging
-            for family in families.iter().take(10) {
-                println!("  - {}", family);
-            }
-        }
-    }
 
     #[test]
     fn test_find_common_fonts() {
@@ -219,15 +185,6 @@ mod tests {
                 println!("{} -> {}", family, path.display());
                 assert!(path.is_absolute(), "Font path should be absolute");
             }
-        }
-    }
-
-    #[test]
-    fn test_get_default_monospace() {
-        // Should always find some monospace font
-        if let Ok(path) = get_default_monospace_font() {
-            println!("Default monospace font: {}", path.display());
-            assert!(path.is_absolute());
         }
     }
 }

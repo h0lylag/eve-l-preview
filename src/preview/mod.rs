@@ -8,7 +8,7 @@ mod session_state;
 mod snapping;
 mod thumbnail;
 
-pub use font_discovery::{find_font_path, get_default_monospace_font, list_font_families, list_fonts};
+pub use font_discovery::{find_font_path, list_fonts};
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;

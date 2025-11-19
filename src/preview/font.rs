@@ -26,10 +26,17 @@ impl FontRenderer {
         info!(path = %path.display(), size = size, "Attempting to load font from path");
         
         let font_data = fs::read(&path)
-            .with_context(|| format!("Failed to read font file: {}", path.display()))?;
+            .with_context(|| format!(
+                "Failed to read font file: {}. Check that the file exists and is readable.",
+                path.display()
+            ))?;
         
         let font = Font::from_bytes(font_data, FontSettings::default())
-            .map_err(|e| anyhow::anyhow!("Failed to parse font: {}", e))?;
+            .map_err(|e| anyhow::anyhow!(
+                "Failed to parse font file '{}': {}. Font may be corrupt or in an unsupported format.",
+                path.display(),
+                e
+            ))?;
         
         info!(path = %path.display(), "Successfully loaded font from path");
         Ok(Self { font, size })
@@ -40,10 +47,23 @@ impl FontRenderer {
         info!(font_name = %font_name, size = size, "Resolving font via fontconfig");
         
         let font_path = crate::preview::find_font_path(font_name)
-            .with_context(|| format!("Failed to resolve font '{}'", font_name))?;
+            .with_context(|| format!(
+                "Failed to resolve font '{}'. Font not found or not installed. \
+                 Use 'fc-list' to see available fonts.",
+                font_name
+            ))?;
         
         info!(font_name = %font_name, resolved_path = %font_path.display(), "Resolved font name to path via fontconfig");
+        
+        // Capture path string before move for error context
+        let path_display = font_path.display().to_string();
         Self::from_path(font_path, size)
+            .with_context(|| format!(
+                "Failed to load font '{}' from path '{}'. \
+                 Font file may be corrupt or in an unsupported format.",
+                font_name,
+                path_display
+            ))
     }
     
     /// Try to find and load a common system font
@@ -87,7 +107,13 @@ impl FontRenderer {
         }
         
         Err(anyhow::anyhow!(
-            "Could not find any system fonts. Tried FONT_PATH ({:?}), fontconfig, and hardcoded paths: {:?}",
+            "Could not find any system fonts. Tried:\n\
+             - FONT_PATH environment variable: {:?}\n\
+             - Fontconfig 'Monospace' family\n\
+             - Hardcoded paths: {:?}\n\
+             \n\
+             Please install a TrueType font package (e.g., dejavu-fonts, liberation-fonts) \
+             or set FONT_PATH to a valid .ttf file.",
             FONT_PATH,
             font_paths
         ))
