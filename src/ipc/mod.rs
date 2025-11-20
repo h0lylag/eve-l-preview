@@ -56,6 +56,30 @@ impl PreviewClient {
         read_message(&mut self.stream)
     }
     
+    /// Try to receive response without blocking (returns None if no data available)
+    pub fn try_recv_response(&mut self) -> Result<Option<PreviewResponse>> {
+        // Set stream to non-blocking mode temporarily
+        self.stream.set_nonblocking(true)?;
+        let result = match read_message(&mut self.stream) {
+            Ok(resp) => Ok(Some(resp)),
+            Err(e) => {
+                // Check if it's WouldBlock (no data available)
+                if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                    if io_err.kind() == std::io::ErrorKind::WouldBlock {
+                        Ok(None)
+                    } else {
+                        Err(e)
+                    }
+                } else {
+                    Err(e)
+                }
+            }
+        };
+        // Restore blocking mode
+        self.stream.set_nonblocking(false)?;
+        result
+    }
+    
     /// Send request and wait for response (convenience method)
     pub fn request(&mut self, req: PreviewRequest) -> Result<PreviewResponse> {
         self.send_request(&req)?;
@@ -128,7 +152,7 @@ impl Drop for PreviewServer {
 }
 
 /// Write length-prefixed message to stream
-fn write_message<T: Serialize>(stream: &mut UnixStream, msg: &T) -> Result<()> {
+pub(crate) fn write_message<T: Serialize>(stream: &mut UnixStream, msg: &T) -> Result<()> {
     let json = serde_json::to_vec(msg).context("Failed to serialize message to JSON")?;
     
     // Write length prefix (u32 little-endian)
@@ -148,7 +172,7 @@ fn write_message<T: Serialize>(stream: &mut UnixStream, msg: &T) -> Result<()> {
 }
 
 /// Read length-prefixed message from stream
-fn read_message<T: for<'de> Deserialize<'de>>(stream: &mut UnixStream) -> Result<T> {
+pub(crate) fn read_message<T: for<'de> Deserialize<'de>>(stream: &mut UnixStream) -> Result<T> {
     // Read length prefix
     let mut len_buf = [0u8; 4];
     stream

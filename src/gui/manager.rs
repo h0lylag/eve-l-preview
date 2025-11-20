@@ -19,6 +19,10 @@ use crate::config::profile::Config;
 use crate::gui::components::profile_selector::{ProfileSelector, ProfileAction};
 use crate::ipc::{PreviewClient, PreviewRequest, PreviewResponse};
 
+// Debounce delay for config saves after IPC position updates (milliseconds)
+// Wait this long after last position change before saving to disk
+const SAVE_DEBOUNCE_MS: u64 = 500;
+
 // Thread-local cache for passing config from run_gui() to ManagerApp::new()
 // This eliminates duplicate Config::load() calls during startup
 thread_local! {
@@ -153,8 +157,6 @@ struct ManagerApp {
     daemon_status: DaemonStatus,
     last_health_check: Instant,
     status_message: Option<StatusMessage>,
-    ipc_event_rx: Receiver<PreviewResponse>,
-    ipc_event_tx: Sender<PreviewResponse>,
     #[cfg(target_os = "linux")]
     tray_rx: Receiver<TrayMessage>,
     #[cfg(target_os = "linux")]
@@ -170,6 +172,10 @@ struct ManagerApp {
     hotkey_settings_state: components::hotkey_settings::HotkeySettingsState,
     visual_settings_state: components::visual_settings::VisualSettingsState,
     settings_changed: bool,
+    
+    // Save debouncing for IPC position updates
+    pending_save: bool,
+    last_position_update: Option<Instant>,
     
     // UI state
     active_tab: ActiveTab,
@@ -268,12 +274,6 @@ impl ManagerApp {
         // Initialize visual settings state
         let visual_settings_state = components::visual_settings::VisualSettingsState::default();
 
-        // Create channel for receiving IPC events from preview process
-        let (ipc_event_tx, ipc_event_rx) = mpsc::channel();
-        
-        // Store the sender for use when starting daemon
-        let ipc_event_sender = ipc_event_tx;
-
         #[cfg(target_os = "linux")]
         let mut app = Self {
             daemon: None,
@@ -281,8 +281,6 @@ impl ManagerApp {
             daemon_status: DaemonStatus::Stopped,
             last_health_check: Instant::now(),
             status_message: None,
-            ipc_event_rx,
-            ipc_event_tx: ipc_event_sender.clone(),
             tray_rx,
             tray_profile_cache,
             shutdown_signal,
@@ -293,6 +291,8 @@ impl ManagerApp {
             hotkey_settings_state,
             visual_settings_state,
             settings_changed: false,
+            pending_save: false,
+            last_position_update: None,
             active_tab: ActiveTab::GlobalSettings,
         };
 
@@ -303,8 +303,6 @@ impl ManagerApp {
             daemon_status: DaemonStatus::Stopped,
             last_health_check: Instant::now(),
             status_message: None,
-            ipc_event_rx,
-            ipc_event_tx: ipc_event_sender,
             should_quit: false,
             config,
             selected_profile_idx,
@@ -312,6 +310,8 @@ impl ManagerApp {
             hotkey_settings_state,
             visual_settings_state,
             settings_changed: false,
+            pending_save: false,
+            last_position_update: None,
             active_tab: ActiveTab::GlobalSettings,
         };
 
@@ -384,33 +384,8 @@ impl ManagerApp {
         
         self.daemon_client = Some(client);
         
-        // Spawn background thread to listen for unsolicited IPC events (position updates, etc.)
-        let event_tx = self.ipc_event_tx.clone();
-        std::thread::spawn(move || {
-            // Connect a second time for event listening
-            match PreviewClient::connect() {
-                Ok(mut event_client) => {
-                    info!("IPC event listener connected");
-                    loop {
-                        match event_client.recv_response() {
-                            Ok(response) => {
-                                if event_tx.send(response).is_err() {
-                                    warn!("GUI event receiver dropped, stopping IPC listener");
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                warn!(error = ?e, "IPC event listener disconnected");
-                                break;
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!(error = ?e, "Failed to connect IPC event listener");
-                }
-            }
-        });
+        // Note: We no longer spawn a separate event listener thread
+        // Instead, we poll the same client connection in poll_ipc_events()
         
         self.daemon_status = DaemonStatus::Running;
         self.status_message = Some(StatusMessage {
@@ -477,50 +452,10 @@ impl ManagerApp {
     }
 
     fn save_config(&mut self) -> Result<()> {
-        // Load fresh config from disk (has all characters including daemon's additions)
-        let mut disk_config = Config::load().unwrap_or_else(|_| self.config.clone());
-        
-        // Merge strategy: Start with disk config, update only what GUI owns
-        for gui_profile in &self.config.profiles {
-            if let Some(disk_profile) = disk_config.profiles.iter_mut()
-                .find(|p| p.name == gui_profile.name)
-            {
-                // Update visual settings from GUI
-                disk_profile.opacity_percent = gui_profile.opacity_percent;
-                disk_profile.border_enabled = gui_profile.border_enabled;
-                disk_profile.border_size = gui_profile.border_size;
-                disk_profile.border_color = gui_profile.border_color.clone();
-                disk_profile.text_size = gui_profile.text_size;
-                disk_profile.text_x = gui_profile.text_x;
-                disk_profile.text_y = gui_profile.text_y;
-                disk_profile.text_color = gui_profile.text_color.clone();
-                disk_profile.text_font_family = gui_profile.text_font_family.clone();
-                disk_profile.cycle_group = gui_profile.cycle_group.clone();
-                disk_profile.description = gui_profile.description.clone();
-                
-                // For character_positions: update dimensions only, preserve positions
-                for (char_name, gui_settings) in &gui_profile.character_positions {
-                    if let Some(disk_settings) = disk_profile.character_positions.get_mut(char_name) {
-                        // Character exists in both: update dimensions, keep daemon's position
-                        disk_settings.dimensions = gui_settings.dimensions;
-                    } else {
-                        // New character added in GUI: add it with GUI's data
-                        disk_profile.character_positions.insert(char_name.clone(), gui_settings.clone());
-                    }
-                }
-                // Characters in disk but not GUI are preserved (daemon owns them)
-            }
-        }
-        
-        // Copy global settings from GUI
-        disk_config.global = self.config.global.clone();
-        
-        // Save the merged config
-        disk_config.save()
+        // With IPC, the GUI already has the complete state from CharacterAdded/PositionChanged events
+        // No need to reload from disk and merge - just save what we have in memory
+        self.config.save()
             .context("Failed to save configuration")?;
-        
-        // Reload config to include daemon's new characters in GUI memory
-        self.config = Config::load().unwrap_or_else(|_| disk_config);
         
         self.settings_changed = false;
         self.status_message = Some(StatusMessage {
@@ -528,6 +463,11 @@ impl ManagerApp {
             color: STATUS_RUNNING,
         });
         info!("Configuration saved to disk");
+        
+        // Update tray cache after save
+        #[cfg(target_os = "linux")]
+        self.update_tray_cache();
+        
         Ok(())
     }
 
@@ -550,6 +490,33 @@ impl ManagerApp {
             color: STATUS_STOPPED,
         });
         info!("Configuration changes discarded");
+    }
+    
+    fn process_debounced_save(&mut self) {
+        // Check if we have a pending save and enough time has elapsed
+        if !self.pending_save {
+            return;
+        }
+        
+        if let Some(last_update) = self.last_position_update {
+            let elapsed = last_update.elapsed();
+            if elapsed >= Duration::from_millis(SAVE_DEBOUNCE_MS) {
+                // Time to save - enough time has passed since last position update
+                if let Err(e) = self.config.save() {
+                    warn!(error = ?e, "Failed to save config after debounced position updates");
+                } else {
+                    // Successfully saved
+                    self.pending_save = false;
+                    self.last_position_update = None;
+                }
+            }
+        } else {
+            // No timestamp recorded, save immediately
+            if let Err(e) = self.config.save() {
+                warn!(error = ?e, "Failed to save config");
+            }
+            self.pending_save = false;
+        }
     }
 
     fn poll_daemon(&mut self) {
@@ -633,9 +600,36 @@ impl ManagerApp {
     }
 
     fn poll_ipc_events(&mut self) {
-        // Process all pending IPC events from preview process
-        while let Ok(event) = self.ipc_event_rx.try_recv() {
-            match event {
+        // Collect all pending events first (to avoid borrowing issues)
+        let mut events = Vec::new();
+        
+        if let Some(client) = &mut self.daemon_client {
+            loop {
+                match client.try_recv_response() {
+                    Ok(Some(event)) => {
+                        events.push(event);
+                    }
+                    Ok(None) => {
+                        // No more events available
+                        break;
+                    }
+                    Err(e) => {
+                        warn!(error = ?e, "IPC connection error, disconnecting");
+                        self.daemon_client = None;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Process collected events
+        for event in events {
+            self.handle_ipc_event(event);
+        }
+    }
+    
+    fn handle_ipc_event(&mut self, event: PreviewResponse) {
+        match event {
                 PreviewResponse::PositionChanged { character, x, y, width, height } => {
                     info!(character = %character, x = x, y = y, "Received PositionChanged event via IPC");
                     
@@ -644,10 +638,9 @@ impl ManagerApp {
                     let settings = crate::types::CharacterSettings::new(x, y, width, height);
                     profile.character_positions.insert(character, settings);
                     
-                    // Save config to disk (GUI owns file writes now)
-                    if let Err(e) = self.config.save() {
-                        warn!(error = ?e, "Failed to save config after position update");
-                    }
+                    // Mark for debounced save instead of immediate save
+                    self.pending_save = true;
+                    self.last_position_update = Some(Instant::now());
                 }
                 
                 PreviewResponse::CharacterAdded { character, x, y, width, height } => {
@@ -665,10 +658,9 @@ impl ManagerApp {
                         self.hotkey_settings_state.load_from_profile(profile);
                     }
                     
-                    // Save config to disk
-                    if let Err(e) = self.config.save() {
-                        warn!(error = ?e, "Failed to save config after adding character");
-                    }
+                    // Mark for debounced save
+                    self.pending_save = true;
+                    self.last_position_update = Some(Instant::now());
                 }
                 
                 PreviewResponse::CharacterRemoved(character) => {
@@ -680,7 +672,6 @@ impl ManagerApp {
                 PreviewResponse::Ready | PreviewResponse::Pong | PreviewResponse::Positions(_) | PreviewResponse::Error(_) => {
                     warn!(response = ?event, "Received unexpected IPC response (not an event)");
                 }
-            }
         }
     }
 
@@ -757,6 +748,7 @@ impl eframe::App for ManagerApp {
         self.poll_daemon();
         self.poll_tray_events();
         self.poll_ipc_events();
+        self.process_debounced_save();
 
         // Request repaint after short delay to poll for tray events even when unfocused
         // This ensures tray menu actions are processed promptly
@@ -840,6 +832,15 @@ impl eframe::App for ManagerApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Flush any pending debounced save before exiting
+        if self.pending_save {
+            if let Err(e) = self.config.save() {
+                error!(error = ?e, "Failed to save config during shutdown");
+            } else {
+                info!("Saved pending config changes during shutdown");
+            }
+        }
+        
         if let Err(err) = self.stop_daemon() {
             error!(error = ?err, "Failed to stop daemon during shutdown");
         }

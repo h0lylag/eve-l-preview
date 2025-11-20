@@ -16,30 +16,12 @@ pub struct ClientConnection {
 impl ClientConnection {
     /// Send response to GUI (can be either a reply or an unsolicited event)
     pub fn send_response(&mut self, resp: &PreviewResponse) -> Result<()> {
-        use std::io::Write;
-        let json = serde_json::to_vec(resp).context("Failed to serialize response")?;
-        let len = json.len() as u32;
-        self.stream.write_all(&len.to_le_bytes())?;
-        self.stream.write_all(&json)?;
-        self.stream.flush()?;
-        Ok(())
+        crate::ipc::write_message(&mut self.stream, resp)
     }
 
     /// Receive request from GUI (blocking)
     fn recv_request(&mut self) -> Result<PreviewRequest> {
-        use std::io::Read;
-        let mut len_buf = [0u8; 4];
-        self.stream.read_exact(&mut len_buf)?;
-        let len = u32::from_le_bytes(len_buf) as usize;
-        
-        const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
-        if len > MAX_MESSAGE_SIZE {
-            anyhow::bail!("Message too large: {} bytes", len);
-        }
-        
-        let mut json_buf = vec![0u8; len];
-        self.stream.read_exact(&mut json_buf)?;
-        Ok(serde_json::from_slice(&json_buf)?)
+        crate::ipc::read_message(&mut self.stream)
     }
 }
 
