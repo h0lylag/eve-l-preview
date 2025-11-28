@@ -13,7 +13,6 @@ enum EditorMode {
 /// State for hotkey settings UI
 pub struct HotkeySettingsState {
     cycle_group_text: String,
-    new_character_text: String,
     editor_mode: EditorMode,
     show_add_characters_popup: bool,
     character_selections: std::collections::HashMap<String, bool>,
@@ -23,7 +22,6 @@ impl HotkeySettingsState {
     pub fn new() -> Self {
         Self {
             cycle_group_text: String::new(),
-            new_character_text: String::new(),
             editor_mode: EditorMode::DragDrop,
             show_add_characters_popup: false,
             character_selections: std::collections::HashMap::new(),
@@ -186,7 +184,7 @@ pub fn ui(ui: &mut egui::Ui, profile: &mut Profile, state: &mut HotkeySettingsSt
                             if ui.button("🗑 Delete").clicked() {
                                 to_delete = Some(row_idx);
                                 changed = true;
-                                ui.close_menu();
+                                ui.close();
                             }
                         });
                     }

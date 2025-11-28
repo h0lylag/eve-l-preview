@@ -127,32 +127,6 @@ pub fn to_fixed(v: f32) -> Fixed {
     (v * fixed_point::MULTIPLIER).round() as Fixed
 }
 
-#[tracing::instrument]
-pub fn get_pictformat(conn: &RustConnection, depth: u8, alpha: bool) -> Result<Pictformat> {
-    if let Some(format) = conn
-        .render_query_pict_formats()
-        .context("Failed to query RENDER picture formats")?
-        .reply()
-        .context("Failed to get reply for RENDER picture formats query")?
-        .formats
-        .iter()
-        .find(|format| {
-            debug!(depth = format.depth, alpha_mask = format.direct.alpha_mask, "discovered Pictformat");
-            format.depth == depth
-                && if alpha {
-                    format.direct.alpha_mask != 0
-                } else {
-                    format.direct.alpha_mask == 0
-                }
-        })
-    {
-        debug!(depth = format.depth, alpha_mask = format.direct.alpha_mask, "using Pictformat");
-        Ok(format.id)
-    } else {
-        anyhow::bail!("Could not find suitable picture format (depth={}, alpha={}). Check RENDER extension support.", depth, alpha)
-    }
-}
-
 pub fn is_window_eve(conn: &RustConnection, window: Window, atoms: &CachedAtoms) -> Result<Option<EveWindowType>> {
     let cookie = conn
         .get_property(false, window, atoms.wm_name, AtomEnum::STRING, 0, 1024)

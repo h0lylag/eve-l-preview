@@ -1,5 +1,3 @@
-use x11rb::protocol::xproto::Window;
-
 use crate::types::Position;
 
 #[derive(Debug, Clone, Copy)]

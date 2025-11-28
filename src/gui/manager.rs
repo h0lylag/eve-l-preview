@@ -2,7 +2,7 @@
 
 use std::io::Cursor;
 use std::process::{Child, Command};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};

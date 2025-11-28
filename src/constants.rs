@@ -110,10 +110,8 @@ pub mod config {
 /// GUI-specific constants (egui manager window)
 pub mod gui {
     use egui;
-    
+
     /// Manager window dimensions
-    pub const WINDOW_WIDTH: f32 = 600.0;
-    pub const WINDOW_HEIGHT: f32 = 800.0;
     pub const WINDOW_MIN_WIDTH: f32 = 500.0;
     pub const WINDOW_MIN_HEIGHT: f32 = 600.0;
     
@@ -135,10 +133,10 @@ pub mod gui {
 pub mod defaults {
     /// GUI manager window settings
     pub mod manager {
-        /// Default GUI window width in pixels (matches gui::WINDOW_WIDTH)
+        /// Default GUI window width in pixels
         pub const WINDOW_WIDTH: u16 = 600;
-        
-        /// Default GUI window height in pixels (matches gui::WINDOW_HEIGHT)
+
+        /// Default GUI window height in pixels
         pub const WINDOW_HEIGHT: u16 = 800;
     }
     
