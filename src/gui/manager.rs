@@ -1,6 +1,5 @@
 //! GUI manager implemented with egui/eframe and ksni system tray support
 
-use std::cell::RefCell;
 use std::io::Cursor;
 use std::process::{Child, Command};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -15,19 +14,8 @@ use ksni::TrayMethods;
 
 use super::components;
 use crate::constants::gui::*;
-use crate::config::profile::Config;
+use crate::config::profile::{Config, SaveStrategy};
 use crate::gui::components::profile_selector::{ProfileSelector, ProfileAction};
-use crate::ipc::{PreviewClient, PreviewRequest, PreviewResponse};
-
-// Debounce delay for config saves after IPC position updates (milliseconds)
-// Wait this long after last position change before saving to disk
-const SAVE_DEBOUNCE_MS: u64 = 500;
-
-// Thread-local cache for passing config from run_gui() to ManagerApp::new()
-// This eliminates duplicate Config::load() calls during startup
-thread_local! {
-    static CONFIG_CACHE: RefCell<Option<Config>> = const { RefCell::new(None) };
-}
 
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,15 +28,25 @@ enum TrayMessage {
 #[cfg(target_os = "linux")]
 struct AppTray {
     tx: std::sync::mpsc::Sender<TrayMessage>,
-    // Cache profile state to avoid loading config from disk on every menu open
-    cached_profiles: std::sync::Arc<std::sync::Mutex<(usize, Vec<String>)>>,
 }
 
 #[cfg(target_os = "linux")]
 impl AppTray {
-    /// Get current profile state from cache (updated by ManagerApp)
+    /// Load current profile state from config file.
+    /// Called each time menu is opened to ensure up-to-date state.
     fn load_current_state(&self) -> (usize, Vec<String>) {
-        self.cached_profiles.lock().unwrap().clone()
+        match Config::load() {
+            Ok(config) => {
+                let profile_names: Vec<String> = config.profiles.iter()
+                    .map(|p| p.name.clone())
+                    .collect();
+                let current_idx = config.profiles.iter()
+                    .position(|p| p.name == config.global.selected_profile)
+                    .unwrap_or(0);
+                (current_idx, profile_names)
+            }
+            Err(_) => (0, vec!["default".to_string()]),
+        }
     }
 }
 
@@ -153,14 +151,11 @@ struct StatusMessage {
 
 struct ManagerApp {
     daemon: Option<Child>,
-    daemon_client: Option<PreviewClient>,
     daemon_status: DaemonStatus,
     last_health_check: Instant,
     status_message: Option<StatusMessage>,
     #[cfg(target_os = "linux")]
     tray_rx: Receiver<TrayMessage>,
-    #[cfg(target_os = "linux")]
-    tray_profile_cache: std::sync::Arc<std::sync::Mutex<(usize, Vec<String>)>>,
     #[cfg(target_os = "linux")]
     shutdown_signal: std::sync::Arc<tokio::sync::Notify>,
     should_quit: bool,
@@ -172,10 +167,6 @@ struct ManagerApp {
     hotkey_settings_state: components::hotkey_settings::HotkeySettingsState,
     visual_settings_state: components::visual_settings::VisualSettingsState,
     settings_changed: bool,
-    
-    // Save debouncing for IPC position updates
-    pending_save: bool,
-    last_position_update: Option<Instant>,
     
     // UI state
     active_tab: ActiveTab,
@@ -205,32 +196,6 @@ impl ManagerApp {
         #[cfg(target_os = "linux")]
         let (tx_to_app, tray_rx) = mpsc::channel();
 
-        // Load configuration from thread-local cache (populated by run_gui())
-        // If cache is empty (shouldn't happen), fall back to loading from disk
-        let config = CONFIG_CACHE.with(|cache| {
-            cache.borrow_mut().take()
-        }).unwrap_or_else(|| {
-            warn!("CONFIG_CACHE empty, loading from disk (this shouldn't happen during normal startup)");
-            Config::load().unwrap_or_default()
-        });
-        
-        // Find selected profile index
-        let selected_profile_idx = config.profiles
-            .iter()
-            .position(|p| p.name == config.global.selected_profile)
-            .unwrap_or(0);
-
-        // Create tray profile cache with initial state
-        #[cfg(target_os = "linux")]
-        let tray_profile_cache = {
-            let profile_names: Vec<String> = config.profiles.iter()
-                .map(|p| p.name.clone())
-                .collect();
-            std::sync::Arc::new(std::sync::Mutex::new((selected_profile_idx, profile_names)))
-        };
-        #[cfg(target_os = "linux")]
-        let tray_cache_clone = tray_profile_cache.clone();
-
         // Spawn Tokio thread for ksni tray
         #[cfg(target_os = "linux")]
         let shutdown_signal = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -247,7 +212,6 @@ impl ManagerApp {
             runtime.block_on(async move {
                 let tray = AppTray {
                     tx: tx_to_app,
-                    cached_profiles: tray_cache_clone,
                 };
                 
                 match tray.spawn().await {
@@ -267,6 +231,15 @@ impl ManagerApp {
             });
         });
 
+        // Load configuration
+        let config = Config::load().unwrap_or_default();
+        
+        // Find selected profile index
+        let selected_profile_idx = config.profiles
+            .iter()
+            .position(|p| p.name == config.global.selected_profile)
+            .unwrap_or(0);
+
         // Initialize hotkey settings state with current profile
         let mut hotkey_settings_state = components::hotkey_settings::HotkeySettingsState::default();
         hotkey_settings_state.load_from_profile(&config.profiles[selected_profile_idx]);
@@ -277,12 +250,10 @@ impl ManagerApp {
         #[cfg(target_os = "linux")]
         let mut app = Self {
             daemon: None,
-            daemon_client: None,
             daemon_status: DaemonStatus::Stopped,
             last_health_check: Instant::now(),
             status_message: None,
             tray_rx,
-            tray_profile_cache,
             shutdown_signal,
             should_quit: false,
             config,
@@ -291,15 +262,12 @@ impl ManagerApp {
             hotkey_settings_state,
             visual_settings_state,
             settings_changed: false,
-            pending_save: false,
-            last_position_update: None,
             active_tab: ActiveTab::GlobalSettings,
         };
 
         #[cfg(not(target_os = "linux"))]
         let mut app = Self {
             daemon: None,
-            daemon_client: None,
             daemon_status: DaemonStatus::Stopped,
             last_health_check: Instant::now(),
             status_message: None,
@@ -310,8 +278,6 @@ impl ManagerApp {
             hotkey_settings_state,
             visual_settings_state,
             settings_changed: false,
-            pending_save: false,
-            last_position_update: None,
             active_tab: ActiveTab::GlobalSettings,
         };
 
@@ -333,92 +299,31 @@ impl ManagerApp {
 
         let child = spawn_preview_daemon()?;
         let pid = child.id();
-        info!(pid, "Started preview process");
+        info!(pid, "Started preview daemon");
 
         self.daemon = Some(child);
         self.daemon_status = DaemonStatus::Starting;
         self.status_message = Some(StatusMessage {
-            text: format!("Preview process starting (PID: {pid})"),
+            text: format!("Preview daemon starting (PID: {pid})"),
             color: STATUS_STARTING,
         });
-        
-        // Wait for socket to appear (with timeout)
-        let socket_path = crate::ipc::default_socket_path()?;
-        let start = Instant::now();
-        while !socket_path.exists() {
-            if start.elapsed() > Duration::from_secs(5) {
-                return Err(anyhow!("Preview socket did not appear within 5 seconds"));
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        
-        // Socket exists, now try to connect (with retries - listener might not be accepting yet)
-        let mut client = None;
-        let connect_start = Instant::now();
-        while client.is_none() {
-            if connect_start.elapsed() > Duration::from_secs(3) {
-                return Err(anyhow!("Failed to connect to preview socket within 3 seconds"));
-            }
-            match PreviewClient::connect() {
-                Ok(c) => {
-                    client = Some(c);
-                    break;
-                }
-                Err(_) => {
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-            }
-        }
-        let mut client = client.unwrap();
-        info!("Connected to preview process via IPC");
-        
-        // Send complete configuration in one message
-        let profile = self.config.profiles[self.selected_profile_idx].clone();
-        let global = self.config.global.clone();
-        let resp = client.request(PreviewRequest::SetProfile { profile, global })
-            .context("Failed to send configuration to preview process")?;
-        match resp {
-            PreviewResponse::Ready => info!("Preview process received configuration via IPC"),
-            _ => warn!(response = ?resp, "Unexpected response from preview process"),
-        }
-        
-        self.daemon_client = Some(client);
-        
-        // Note: We no longer spawn a separate event listener thread
-        // Instead, we poll the same client connection in poll_ipc_events()
-        
-        self.daemon_status = DaemonStatus::Running;
-        self.status_message = Some(StatusMessage {
-            text: format!("Preview process running (PID: {pid})"),
-            color: STATUS_RUNNING,
-        });
-        
         Ok(())
     }
 
     fn stop_daemon(&mut self) -> Result<()> {
-        // Send shutdown via IPC first (graceful shutdown)
-        if let Some(mut client) = self.daemon_client.take() {
-            let _ = client.send_request(&PreviewRequest::Shutdown);
-            info!("Sent shutdown request to preview process via IPC");
-        }
-        
         if let Some(mut child) = self.daemon.take() {
-            info!(pid = child.id(), "Stopping preview process");
-            // Give it a moment to shutdown gracefully
-            std::thread::sleep(Duration::from_millis(100));
-            // Force kill if still running
+            info!(pid = child.id(), "Stopping preview daemon");
             let _ = child.kill();
             let status = child
                 .wait()
-                .context("Failed to wait for preview process exit")?;
+                .context("Failed to wait for preview daemon exit")?;
             self.daemon_status = if status.success() {
                 DaemonStatus::Stopped
             } else {
                 DaemonStatus::Crashed(status.code())
             };
             self.status_message = Some(StatusMessage {
-                text: "Preview process stopped".to_string(),
+                text: "Preview daemon stopped".to_string(),
                 color: STATUS_STOPPED,
             });
         }
@@ -441,21 +346,51 @@ impl ManagerApp {
         self.restart_daemon();
     }
 
-    /// Update the tray icon's cached profile list
-    /// Call this whenever config.profiles or selected_profile_idx changes
-    #[cfg(target_os = "linux")]
-    fn update_tray_cache(&self) {
-        let profile_names: Vec<String> = self.config.profiles.iter()
-            .map(|p| p.name.clone())
-            .collect();
-        *self.tray_profile_cache.lock().unwrap() = (self.selected_profile_idx, profile_names);
-    }
-
     fn save_config(&mut self) -> Result<()> {
-        // With IPC, the GUI already has the complete state from CharacterAdded/PositionChanged events
-        // No need to reload from disk and merge - just save what we have in memory
-        self.config.save()
+        // Load fresh config from disk (has all characters including daemon's additions)
+        let mut disk_config = Config::load().unwrap_or_else(|_| self.config.clone());
+        
+        // Merge strategy: Start with disk config, update only what GUI owns
+        for gui_profile in &self.config.profiles {
+            if let Some(disk_profile) = disk_config.profiles.iter_mut()
+                .find(|p| p.name == gui_profile.name)
+            {
+                // Update visual settings from GUI
+                disk_profile.opacity_percent = gui_profile.opacity_percent;
+                disk_profile.border_enabled = gui_profile.border_enabled;
+                disk_profile.border_size = gui_profile.border_size;
+                disk_profile.border_color = gui_profile.border_color.clone();
+                disk_profile.text_size = gui_profile.text_size;
+                disk_profile.text_x = gui_profile.text_x;
+                disk_profile.text_y = gui_profile.text_y;
+                disk_profile.text_color = gui_profile.text_color.clone();
+                disk_profile.text_font_family = gui_profile.text_font_family.clone();
+                disk_profile.cycle_group = gui_profile.cycle_group.clone();
+                disk_profile.description = gui_profile.description.clone();
+                
+                // For character_positions: update dimensions only, preserve positions
+                for (char_name, gui_settings) in &gui_profile.character_positions {
+                    if let Some(disk_settings) = disk_profile.character_positions.get_mut(char_name) {
+                        // Character exists in both: update dimensions, keep daemon's position
+                        disk_settings.dimensions = gui_settings.dimensions;
+                    } else {
+                        // New character added in GUI: add it with GUI's data
+                        disk_profile.character_positions.insert(char_name.clone(), gui_settings.clone());
+                    }
+                }
+                // Characters in disk but not GUI are preserved (daemon owns them)
+            }
+        }
+        
+        // Copy global settings from GUI
+        disk_config.global = self.config.global.clone();
+        
+        // Save the merged config
+        disk_config.save_with_strategy(SaveStrategy::OverwriteCharacterPositions)
             .context("Failed to save configuration")?;
+        
+        // Reload config to include daemon's new characters in GUI memory
+        self.config = Config::load().unwrap_or_else(|_| disk_config);
         
         self.settings_changed = false;
         self.status_message = Some(StatusMessage {
@@ -463,11 +398,6 @@ impl ManagerApp {
             color: STATUS_RUNNING,
         });
         info!("Configuration saved to disk");
-        
-        // Update tray cache after save
-        #[cfg(target_os = "linux")]
-        self.update_tray_cache();
-        
         Ok(())
     }
 
@@ -480,10 +410,6 @@ impl ManagerApp {
             .position(|p| p.name == self.config.global.selected_profile)
             .unwrap_or(0);
         
-        // Update tray cache with reloaded config
-        #[cfg(target_os = "linux")]
-        self.update_tray_cache();
-        
         self.settings_changed = false;
         self.status_message = Some(StatusMessage {
             text: "Changes discarded".to_string(),
@@ -491,31 +417,24 @@ impl ManagerApp {
         });
         info!("Configuration changes discarded");
     }
-    
-    fn process_debounced_save(&mut self) {
-        // Check if we have a pending save and enough time has elapsed
-        if !self.pending_save {
-            return;
-        }
-        
-        if let Some(last_update) = self.last_position_update {
-            let elapsed = last_update.elapsed();
-            if elapsed >= Duration::from_millis(SAVE_DEBOUNCE_MS) {
-                // Time to save - enough time has passed since last position update
-                if let Err(e) = self.config.save() {
-                    warn!(error = ?e, "Failed to save config after debounced position updates");
-                } else {
-                    // Successfully saved
-                    self.pending_save = false;
-                    self.last_position_update = None;
+
+    fn reload_character_list(&mut self) {
+        // Load fresh config from disk to get daemon's new characters
+        if let Ok(disk_config) = Config::load() {
+            // Merge new characters from disk into GUI config without losing GUI changes
+            for (profile_idx, gui_profile) in self.config.profiles.iter_mut().enumerate() {
+                if let Some(disk_profile) = disk_config.profiles.get(profile_idx) {
+                    if disk_profile.name == gui_profile.name {
+                        // Add any new characters from disk that GUI doesn't know about
+                        for (char_name, char_settings) in &disk_profile.character_positions {
+                            if !gui_profile.character_positions.contains_key(char_name) {
+                                gui_profile.character_positions.insert(char_name.clone(), char_settings.clone());
+                                info!(character = %char_name, profile = %gui_profile.name, "Detected new character from daemon");
+                            }
+                        }
+                    }
                 }
             }
-        } else {
-            // No timestamp recorded, save immediately
-            if let Err(e) = self.config.save() {
-                warn!(error = ?e, "Failed to save config");
-            }
-            self.pending_save = false;
         }
     }
 
@@ -547,7 +466,8 @@ impl ManagerApp {
                             text: "Preview daemon running".to_string(),
                             color: STATUS_RUNNING,
                         });
-                        // Daemon started successfully - IPC event listener will handle new characters
+                        // Reload config when daemon transitions to running to pick up any new characters
+                        self.reload_character_list();
                     }
                 }
                 Err(err) => {
@@ -574,10 +494,6 @@ impl ManagerApp {
                             self.config.profiles[idx].name.clone();
                         self.selected_profile_idx = idx;
                         
-                        // Update tray cache immediately
-                        #[cfg(target_os = "linux")]
-                        self.update_tray_cache();
-                        
                         // Save config with new selection
                         if let Err(err) = self.save_config() {
                             error!(error = ?err, "Failed to save config after profile switch");
@@ -596,82 +512,6 @@ impl ManagerApp {
                     self.should_quit = true;
                 }
             }
-        }
-    }
-
-    fn poll_ipc_events(&mut self) {
-        // Collect all pending events first (to avoid borrowing issues)
-        let mut events = Vec::new();
-        
-        if let Some(client) = &mut self.daemon_client {
-            loop {
-                match client.try_recv_response() {
-                    Ok(Some(event)) => {
-                        events.push(event);
-                    }
-                    Ok(None) => {
-                        // No more events available
-                        break;
-                    }
-                    Err(e) => {
-                        warn!(error = ?e, "IPC connection error, disconnecting");
-                        self.daemon_client = None;
-                        break;
-                    }
-                }
-            }
-        }
-        
-        // Process collected events
-        for event in events {
-            self.handle_ipc_event(event);
-        }
-    }
-    
-    fn handle_ipc_event(&mut self, event: PreviewResponse) {
-        match event {
-                PreviewResponse::PositionChanged { character, x, y, width, height } => {
-                    info!(character = %character, x = x, y = y, "Received PositionChanged event via IPC");
-                    
-                    // Update character position in current profile
-                    let profile = &mut self.config.profiles[self.selected_profile_idx];
-                    let settings = crate::types::CharacterSettings::new(x, y, width, height);
-                    profile.character_positions.insert(character, settings);
-                    
-                    // Mark for debounced save instead of immediate save
-                    self.pending_save = true;
-                    self.last_position_update = Some(Instant::now());
-                }
-                
-                PreviewResponse::CharacterAdded { character, x, y, width, height } => {
-                    info!(character = %character, x = x, y = y, "Received CharacterAdded event via IPC");
-                    
-                    // Add new character to current profile
-                    let profile = &mut self.config.profiles[self.selected_profile_idx];
-                    let settings = crate::types::CharacterSettings::new(x, y, width, height);
-                    profile.character_positions.insert(character.clone(), settings);
-                    
-                    // Add to cycle group if not already present
-                    if !profile.cycle_group.contains(&character) {
-                        profile.cycle_group.push(character.clone());
-                        // Reload hotkey settings UI to reflect the change
-                        self.hotkey_settings_state.load_from_profile(profile);
-                    }
-                    
-                    // Mark for debounced save
-                    self.pending_save = true;
-                    self.last_position_update = Some(Instant::now());
-                }
-                
-                PreviewResponse::CharacterRemoved(character) => {
-                    info!(character = %character, "Received CharacterRemoved event via IPC");
-                    // Note: We don't remove from config - preserve positions for when they log back in
-                }
-                
-                // Ignore response-only messages (these shouldn't come unsolicited)
-                PreviewResponse::Ready | PreviewResponse::Pong | PreviewResponse::Positions(_) | PreviewResponse::Error(_) => {
-                    warn!(response = ?event, "Received unexpected IPC response (not an event)");
-                }
         }
     }
 
@@ -747,8 +587,6 @@ impl eframe::App for ManagerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_daemon();
         self.poll_tray_events();
-        self.poll_ipc_events();
-        self.process_debounced_save();
 
         // Request repaint after short delay to poll for tray events even when unfocused
         // This ensures tray menu actions are processed promptly
@@ -782,7 +620,10 @@ impl eframe::App for ManagerApp {
                 ui.selectable_value(&mut self.active_tab, ActiveTab::GlobalSettings, "⚙ Global Settings");
                 ui.selectable_value(&mut self.active_tab, ActiveTab::ProfileSettings, "📋 Profile Settings");
                 
-                // Tab switched - IPC event listener handles new character discovery automatically
+                // When switching to Profile Settings tab, reload character list to pick up new characters
+                if self.active_tab == ActiveTab::ProfileSettings && prev_tab != ActiveTab::ProfileSettings {
+                    self.reload_character_list();
+                }
             });
 
             ui.add_space(SECTION_SPACING);
@@ -832,15 +673,6 @@ impl eframe::App for ManagerApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Flush any pending debounced save before exiting
-        if self.pending_save {
-            if let Err(e) = self.config.save() {
-                error!(error = ?e, "Failed to save config during shutdown");
-            } else {
-                info!("Saved pending config changes during shutdown");
-            }
-        }
-        
         if let Err(err) = self.stop_daemon() {
             error!(error = ?err, "Failed to stop daemon during shutdown");
         }
@@ -939,16 +771,10 @@ fn load_window_icon() -> Result<egui::IconData> {
 }
 
 pub fn run_gui() -> Result<()> {
-    // Load config ONCE at startup
+    // Load config to get window dimensions
     let config = Config::load().unwrap_or_default();
     let window_width = config.global.window_width as f32;
     let window_height = config.global.window_height as f32;
-    
-    // Store config in thread-local for ManagerApp::new() to access
-    // This eliminates the second Config::load() call
-    CONFIG_CACHE.with(|cache| {
-        *cache.borrow_mut() = Some(config);
-    });
     
     #[cfg(target_os = "linux")]
     let icon = match load_window_icon() {

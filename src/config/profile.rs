@@ -12,6 +12,15 @@ use tracing::info;
 
 use crate::types::CharacterSettings;
 
+/// Strategy for saving configuration files
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveStrategy {
+    /// Preserve character_positions entries already on disk (GUI edits)
+    PreserveCharacterPositions,
+    /// Overwrite character_positions with in-memory data (daemon updates)
+    OverwriteCharacterPositions,
+}
+
 /// Top-level configuration with profile support
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -171,26 +180,6 @@ impl Default for GlobalSettings {
     }
 }
 
-impl GlobalSettings {
-    /// Create empty GlobalSettings (will be populated via IPC)
-    pub fn empty() -> Self {
-        Self {
-            selected_profile: String::new(),
-            window_width: 0,
-            window_height: 0,
-            window_x: None,
-            window_y: None,
-            minimize_clients_on_switch: false,
-            hotkey_require_eve_focus: false,
-            hide_when_no_focus: false,
-            snap_threshold: 0,
-            preserve_thumbnail_position_on_swap: false,
-            default_thumbnail_width: 0,
-            default_thumbnail_height: 0,
-        }
-    }
-}
-
 impl Profile {
     /// Create a new profile with default values and the given name
     pub fn default_with_name(name: String, description: String) -> Self {
@@ -198,25 +187,6 @@ impl Profile {
         profile.name = name;
         profile.description = description;
         profile
-    }
-    
-    /// Create empty Profile (will be populated via IPC)
-    pub fn empty() -> Self {
-        Self {
-            name: String::new(),
-            description: String::new(),
-            opacity_percent: 0,
-            border_enabled: false,
-            border_size: 0,
-            border_color: String::new(),
-            text_size: 0,
-            text_x: 0,
-            text_y: 0,
-            text_color: String::new(),
-            text_font_family: String::new(),
-            cycle_group: Vec::new(),
-            character_positions: HashMap::new(),
-        }
     }
 }
 
@@ -249,9 +219,8 @@ impl Config {
         Ok(config)
     }
     
-    /// Save configuration to JSON file
-    /// GUI is now the single source of truth for all config writes (including character positions)
-    pub fn save(&self) -> Result<()> {
+    /// Save configuration to JSON file using chosen strategy
+    pub fn save_with_strategy(&self, strategy: SaveStrategy) -> Result<()> {
         let config_path = Self::path();
         
         // Ensure config directory exists
@@ -260,7 +229,31 @@ impl Config {
                 .with_context(|| format!("Failed to create config directory {:?}", parent))?;
         }
         
-        let json_string = serde_json::to_string_pretty(self)
+        let config_to_save = match strategy {
+            SaveStrategy::PreserveCharacterPositions => {
+                let mut clone = self.clone();
+                if config_path.exists() {
+                    if let Ok(contents) = fs::read_to_string(&config_path) {
+                        if let Ok(existing_config) = serde_json::from_str::<Config>(&contents) {
+                            for profile_to_save in clone.profiles.iter_mut() {
+                                if let Some(existing_profile) = existing_config.profiles.iter()
+                                    .find(|p| p.name == profile_to_save.name)
+                                {
+                                    // Profile exists on disk - preserve its character positions
+                                    profile_to_save.character_positions = existing_profile.character_positions.clone();
+                                }
+                                // If profile doesn't exist on disk (new/duplicated profile),
+                                // keep the character_positions from the in-memory profile (from clone/duplication)
+                            }
+                        }
+                    }
+                }
+                clone
+            }
+            SaveStrategy::OverwriteCharacterPositions => self.clone(),
+        };
+        
+        let json_string = serde_json::to_string_pretty(&config_to_save)
             .context("Failed to serialize config to JSON")?;
         
         fs::write(&config_path, json_string)
@@ -268,6 +261,11 @@ impl Config {
         
         info!("Saved config to {:?}", config_path);
         Ok(())
+    }
+
+    /// Convenience helper: save preserving character positions (GUI default)
+    pub fn save(&self) -> Result<()> {
+        self.save_with_strategy(SaveStrategy::PreserveCharacterPositions)
     }
 }
 

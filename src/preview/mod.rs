@@ -4,7 +4,6 @@ mod cycle_state;
 mod event_handler;
 pub mod font;
 mod font_discovery;
-mod ipc_handler;
 mod session_state;
 mod snapping;
 mod thumbnail;
@@ -13,7 +12,7 @@ pub use font_discovery::{find_font_path, list_fonts, select_best_default_font};
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use x11rb::connection::Connection;
 use x11rb::protocol::damage::ConnectionExt as DamageExt;
@@ -22,13 +21,11 @@ use x11rb::protocol::xproto::*;
 use crate::config::PersistentState;
 use crate::constants::{self, eve, paths, wine};
 use crate::hotkeys::{self, spawn_listener, CycleCommand};
-use crate::ipc::PreviewServer;
 use crate::types::Dimensions;
 use crate::x11_utils::{activate_window, is_window_eve, is_window_minimized, minimize_window, AppContext, CachedAtoms};
 
 use cycle_state::CycleState;
 use event_handler::handle_event;
-use ipc_handler::spawn_ipc_listener;
 use session_state::SessionState;
 use thumbnail::Thumbnail;
 
@@ -205,7 +202,7 @@ fn get_eves<'a>(
 }
 
 pub fn run_preview_daemon() -> Result<()> {
-    // Connect to X11 first
+    // Connect to X11 first to get screen dimensions for smart config defaults
     let (conn, screen_num) = x11rb::connect(None)
         .context("Failed to connect to X11 server. Is DISPLAY set correctly?")?;
     let screen = &conn.setup().roots[screen_num];
@@ -216,35 +213,25 @@ pub fn run_preview_daemon() -> Result<()> {
         "Connected to X11 server"
     );
 
-    // DO NOT load config from file - wait for GUI to send it via IPC
-    // Create empty PersistentState that will be populated via SetProfile message
-    let persistent_state_init = PersistentState::empty();
-    
-    // Wrap persistent state in Arc<Mutex> for sharing with IPC thread
-    let persistent_state = Arc::new(Mutex::new(persistent_state_init));
-    let persistent_state_clone = persistent_state.clone();
+    // Load config with screen-aware defaults
+    let mut persistent_state = PersistentState::load_with_screen(
+        screen.width_in_pixels,
+        screen.height_in_pixels,
+    );
+    let config = persistent_state.build_display_config();
+    info!(config = ?config, "Loaded display configuration");
     
     let mut session_state = SessionState::new();
     info!(
-        count = persistent_state.lock().unwrap().character_positions.len(),
+        count = persistent_state.character_positions.len(),
         "Loaded character positions from config"
     );
     
-    // Setup IPC server
-    let ipc_server = PreviewServer::bind()
-        .context("Failed to create IPC server")?;
-    info!(socket = ?ipc_server.path(), "IPC server started");
-    
-    // Create channels
-    let (shutdown_tx, shutdown_rx) = mpsc::channel();
-    let (hotkey_tx, hotkey_rx) = mpsc::channel();
-    let (client_tx, client_rx) = mpsc::channel();
-    
-    // Spawn IPC listener thread
-    let _ipc_thread = spawn_ipc_listener(ipc_server, persistent_state_clone, shutdown_tx.clone(), client_tx);
-    
     // Initialize cycle state from config
-    let mut cycle_state = CycleState::new(persistent_state.lock().unwrap().profile.cycle_group.clone());
+    let mut cycle_state = CycleState::new(persistent_state.profile.cycle_group.clone());
+    
+    // Create channel for hotkey thread → main loop
+    let (hotkey_tx, hotkey_rx) = mpsc::channel();
     
     // Spawn hotkey listener (optional - skip if permissions denied)
     let _hotkey_handle = if hotkeys::check_permissions() {
@@ -269,45 +256,39 @@ pub fn run_preview_daemon() -> Result<()> {
         .context("Failed to cache X11 atoms at startup")?;
     
     // Initialize font renderer with configured font (or fallback to system default)
-    let font_renderer = {
-        let state = persistent_state.lock().unwrap();
-        if !state.profile.text_font_family.is_empty() {
-            info!(
-                configured_font = %state.profile.text_font_family,
-                size = state.profile.text_size,
-                "Attempting to load user-configured font"
+    let font_renderer = if !persistent_state.profile.text_font_family.is_empty() {
+        info!(
+            configured_font = %persistent_state.profile.text_font_family,
+            size = persistent_state.profile.text_size,
+            "Attempting to load user-configured font"
+        );
+        // Try user-selected font first
+        font::FontRenderer::from_font_name(
+            &persistent_state.profile.text_font_family,
+            persistent_state.profile.text_size as f32
+        )
+        .or_else(|e| {
+            warn!(
+                font = %persistent_state.profile.text_font_family,
+                error = ?e,
+                "Failed to load configured font, falling back to system default"
             );
-            // Try user-selected font first
-            font::FontRenderer::from_font_name(
-                &state.profile.text_font_family,
-                state.profile.text_size as f32
-            )
-            .or_else(|e| {
-                warn!(
-                    font = %state.profile.text_font_family,
-                    error = ?e,
-                    "Failed to load configured font, falling back to system default"
-                );
-                font::FontRenderer::from_system_font(&conn, state.profile.text_size as f32)
-            })
-        } else {
-            info!(
-                size = state.profile.text_size,
-                "No font configured, using system default"
-            );
-            font::FontRenderer::from_system_font(&conn, state.profile.text_size as f32)
-        }
-        .context(format!("Failed to initialize font renderer with size {}", state.profile.text_size))?
-    };
+            font::FontRenderer::from_system_font(&conn, persistent_state.profile.text_size as f32)
+        })
+    } else {
+        info!(
+            size = persistent_state.profile.text_size,
+            "No font configured, using system default"
+        );
+        font::FontRenderer::from_system_font(&conn, persistent_state.profile.text_size as f32)
+    }
+    .context(format!("Failed to initialize font renderer with size {}", persistent_state.profile.text_size))?;
     
     info!(
-        size = persistent_state.lock().unwrap().profile.text_size,
-        font = %persistent_state.lock().unwrap().profile.text_font_family,
+        size = persistent_state.profile.text_size,
+        font = %persistent_state.profile.text_font_family,
         "Font renderer initialized"
     );
-    
-    // Build display config (will contain empty values until SetProfile arrives)
-    let config = persistent_state.lock().unwrap().build_display_config();
     
     conn.damage_query_version(1, 1)
         .context("Failed to query DAMAGE extension version. Is DAMAGE extension available?")?;
@@ -330,49 +311,27 @@ pub fn run_preview_daemon() -> Result<()> {
         font_renderer: &font_renderer,
     };
 
-    let mut eves = {
-        let mut state = persistent_state.lock().unwrap();
-        get_eves(&ctx, &mut *state, &session_state)
-            .context("Failed to get initial list of EVE windows")?
-    };
+    let mut eves = get_eves(&ctx, &mut persistent_state, &session_state)
+        .context("Failed to get initial list of EVE windows")?;
     
     // Register initial windows with cycle state
     for (window, thumbnail) in eves.iter() {
         cycle_state.add_window(thumbnail.character_name.clone(), *window);
     }
     
-    // Track IPC client connection (None until GUI connects)
-    let mut ipc_client: Option<Arc<Mutex<ipc_handler::ClientConnection>>> = None;
-    
-    info!("Preview process running");
+    info!("Preview daemon running");
     
     loop {
-        // Check for shutdown signal from IPC
-        if shutdown_rx.try_recv().is_ok() {
-            info!("Shutdown signal received, exiting");
-            break Ok(());
-        }
-        
-        // Check for new IPC client connection
-        if let Ok(client) = client_rx.try_recv() {
-            info!("Main loop received IPC client connection");
-            ipc_client = Some(client);
-        }
-        
         // Check for hotkey commands (non-blocking)
         if let Ok(command) = hotkey_rx.try_recv() {
             // Check if we should only allow hotkeys when EVE window is focused
-            let state = persistent_state.lock().unwrap();
-            let should_process = if state.global.hotkey_require_eve_focus {
+            let should_process = if persistent_state.global.hotkey_require_eve_focus {
                 crate::x11_utils::is_eve_window_focused(&conn, screen, &atoms)
                     .inspect_err(|e| error!(error = %e, "Failed to check focused window"))
                     .unwrap_or(false)
             } else {
                 true
             };
-            
-            let minimize_on_switch = state.global.minimize_clients_on_switch;
-            drop(state); // Release lock before window operations
             
             if should_process {
                 info!(command = ?command, "Received hotkey command");
@@ -394,7 +353,7 @@ pub fn run_preview_daemon() -> Result<()> {
                     );
                     if let Err(e) = activate_window(&conn, screen, &atoms, window) {
                         error!(window = window, error = %e, "Failed to activate window");
-                    } else if minimize_on_switch {
+                    } else if persistent_state.global.minimize_clients_on_switch {
                         // Minimize all other EVE clients after successful activation
                         let other_windows: Vec<Window> = eves
                             .keys()
@@ -411,23 +370,20 @@ pub fn run_preview_daemon() -> Result<()> {
                     warn!(active_windows = cycle_state.config_order().len(), "No window to activate, cycle state is empty");
                 }
             } else {
-                let state = persistent_state.lock().unwrap();
-                info!(hotkey_require_eve_focus = state.global.hotkey_require_eve_focus, "Hotkey ignored, EVE window not focused (hotkey_require_eve_focus enabled)");
+                info!(hotkey_require_eve_focus = persistent_state.global.hotkey_require_eve_focus, "Hotkey ignored, EVE window not focused (hotkey_require_eve_focus enabled)");
             }
         }
 
         let event = conn.wait_for_event()
             .context("Failed to wait for X11 event")?;
-        let mut state = persistent_state.lock().unwrap();
         let _ = handle_event(
             &ctx,
-            &mut *state,
+            &mut persistent_state,
             &mut eves,
             event,
             &mut session_state,
             &mut cycle_state,
-            check_and_create_window,
-            &ipc_client,
+            check_and_create_window
         ).inspect_err(|err| error!(error = ?err, "Event handling error"));
     }
 }

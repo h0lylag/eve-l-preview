@@ -14,6 +14,7 @@ use tracing::{error, info};
 use x11rb::protocol::render::Color;
 
 use crate::color::{HexColor, Opacity};
+use crate::config::profile::SaveStrategy;
 use crate::types::{CharacterSettings, Position, TextOffset};
 
 
@@ -55,18 +56,6 @@ impl PersistentState {
         path.push(crate::constants::config::APP_DIR);
         path.push(crate::constants::config::FILENAME);
         path
-    }
-
-    /// Create empty state (will be populated via IPC SetProfile message)
-    /// This is used by the preview daemon when starting - it waits for GUI to send config
-    pub fn empty() -> Self {
-        use crate::config::profile::{GlobalSettings, Profile};
-        
-        PersistentState {
-            profile: Profile::empty(),
-            global: GlobalSettings::empty(),
-            character_positions: HashMap::new(),
-        }
     }
 
     /// Get default thumbnail dimensions for screen size
@@ -162,7 +151,6 @@ impl PersistentState {
 
     /// Save character positions to the profile config
     /// This only updates character_positions, preserving all other profile settings
-    /// NOTE: This method is now deprecated - GUI owns all config writes via IPC
     pub fn save(&self) -> Result<()> {
         // Load the profile-based config
         let config_path = Self::config_path();
@@ -188,8 +176,8 @@ impl PersistentState {
             profile_positions.insert(char_name.clone(), char_settings.clone());
         }
         
-        // Save the updated profile config
-        profile_config.save()
+        // Save the updated profile config (daemon owns character positions)
+        profile_config.save_with_strategy(SaveStrategy::OverwriteCharacterPositions)
     }
 
     /// Update position and dimensions after drag - saves to character_positions and persists

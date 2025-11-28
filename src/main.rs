@@ -5,7 +5,6 @@ mod config;
 mod constants;
 mod gui;
 mod hotkeys;
-mod ipc;
 mod preview;
 mod types;
 mod x11_utils;
