@@ -303,11 +303,17 @@ pub fn run_preview_daemon() -> Result<()> {
     )
     .context("Failed to set event mask on root window")?;
 
+    // Pre-cache picture formats (avoids expensive queries on every thumbnail)
+    let formats = crate::x11_utils::CachedFormats::new(&conn, screen)
+        .context("Failed to cache picture formats at startup")?;
+    info!("Picture formats cached");
+
     let ctx = AppContext {
         conn: &conn,
         screen,
         config: &config,
         atoms: &atoms,
+        formats: &formats,
         font_renderer: &font_renderer,
     };
 

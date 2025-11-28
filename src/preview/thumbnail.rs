@@ -14,7 +14,7 @@ use x11rb::wrapper::ConnectionExt as WrapperExt;
 use crate::config::DisplayConfig;
 use crate::constants::{positioning, x11};
 use crate::types::{Dimensions, Position, ThumbnailState};
-use crate::x11_utils::{get_pictformat, to_fixed, AppContext};
+use crate::x11_utils::{to_fixed, AppContext};
 
 use super::font::FontRenderer;
 use super::snapping::Rect;
@@ -54,6 +54,7 @@ pub struct Thumbnail<'a> {
     // === Borrowed Dependencies (private, references to app context) ===
     conn: &'a RustConnection,
     config: &'a DisplayConfig,
+    formats: &'a crate::x11_utils::CachedFormats,
     font_renderer: &'a FontRenderer,
 }
 
@@ -111,53 +112,32 @@ impl<'a> Thumbnail<'a> {
         .context(format!("Failed to set _NET_WM_PID for '{}'", character_name))?;
 
         // Set opacity
-        let opacity_atom = ctx.conn
-            .intern_atom(false, b"_NET_WM_WINDOW_OPACITY")
-            .context("Failed to intern _NET_WM_WINDOW_OPACITY atom")?
-            .reply()
-            .context("Failed to get reply for _NET_WM_WINDOW_OPACITY atom")?
-            .atom;
         ctx.conn.change_property32(
             PropMode::REPLACE,
             window,
-            opacity_atom,
+            ctx.atoms.net_wm_window_opacity,
             AtomEnum::CARDINAL,
             &[ctx.config.opacity],
         )
         .context(format!("Failed to set window opacity for '{}'", character_name))?;
 
         // Set WM_CLASS
-        let wm_class = ctx.conn.intern_atom(false, b"WM_CLASS")
-            .context("Failed to intern WM_CLASS atom")?
-            .reply()
-            .context("Failed to get reply for WM_CLASS atom")?
-            .atom;
         ctx.conn.change_property8(
             PropMode::REPLACE,
             window,
-            wm_class,
+            ctx.atoms.wm_class,
             AtomEnum::STRING,
             b"eve-l-preview\0eve-l-preview\0",
         )
         .context(format!("Failed to set WM_CLASS for '{}'", character_name))?;
 
         // Set always-on-top
-        let net_wm_state = ctx.conn.intern_atom(false, b"_NET_WM_STATE")
-            .context("Failed to intern _NET_WM_STATE atom")?
-            .reply()
-            .context("Failed to get reply for _NET_WM_STATE atom")?
-            .atom;
-        let above_atom = ctx.conn.intern_atom(false, b"_NET_WM_STATE_ABOVE")
-            .context("Failed to intern _NET_WM_STATE_ABOVE atom")?
-            .reply()
-            .context("Failed to get reply for _NET_WM_STATE_ABOVE atom")?
-            .atom;
         ctx.conn.change_property32(
             PropMode::REPLACE,
             window,
-            net_wm_state,
+            ctx.atoms.net_wm_state,
             AtomEnum::ATOM,
-            &[above_atom],
+            &[ctx.atoms.net_wm_state_above],
         )
         .context(format!("Failed to set window always-on-top for '{}'", character_name))?;
 
@@ -189,15 +169,13 @@ impl<'a> Thumbnail<'a> {
             .context(format!("Failed to create border fill for '{}'", character_name))?;
 
         // Source and destination pictures
-        let pict_format = get_pictformat(ctx.conn, ctx.screen.root_depth, false)
-            .context("Failed to get picture format for thumbnail rendering")?;
         let src_picture = ctx.conn.generate_id()
             .context("Failed to generate ID for source picture")?;
         let dst_picture = ctx.conn.generate_id()
             .context("Failed to generate ID for destination picture")?;
-        ctx.conn.render_create_picture(src_picture, src, pict_format, &CreatePictureAux::new())
+        ctx.conn.render_create_picture(src_picture, src, ctx.formats.rgb, &CreatePictureAux::new())
             .context(format!("Failed to create source picture for '{}'", character_name))?;
-        ctx.conn.render_create_picture(dst_picture, window, pict_format, &CreatePictureAux::new())
+        ctx.conn.render_create_picture(dst_picture, window, ctx.formats.rgb, &CreatePictureAux::new())
             .context(format!("Failed to create destination picture for '{}'", character_name))?;
 
         // Overlay resources
@@ -210,8 +188,7 @@ impl<'a> Thumbnail<'a> {
         ctx.conn.render_create_picture(
             overlay_picture,
             overlay_pixmap,
-            get_pictformat(ctx.conn, x11::ARGB_DEPTH, true)
-                .context("Failed to get ARGB picture format for overlay")?,
+            ctx.formats.argb,
             &CreatePictureAux::new(),
         )
         .context(format!("Failed to create overlay picture for '{}'", character_name))?;
@@ -351,6 +328,7 @@ impl<'a> Thumbnail<'a> {
             // Borrowed Dependencies
             conn: ctx.conn,
             config: ctx.config,
+            formats: ctx.formats,
             font_renderer,
         };
         
@@ -584,8 +562,7 @@ impl<'a> Thumbnail<'a> {
                 self.conn.render_create_picture(
                     text_picture,
                     text_pixmap,
-                    get_pictformat(self.conn, x11::ARGB_DEPTH, true)
-                        .context("Failed to get ARGB picture format for text")?,
+                    self.formats.argb,
                     &CreatePictureAux::new(),
                 )
                 .context(format!("Failed to create text picture for '{}'", self.character_name))?;
